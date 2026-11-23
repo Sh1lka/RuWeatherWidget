@@ -1,0 +1,22 @@
+# Build outputs
+Release/
+*.obj
+*.pdb
+*.log
+found_step.json
+tc6528.json
+recovered_Program.cs
+TestRunner.*
+test_*
+inspect_*
+find_*
+copy_*
+verify_*
+assemble_program.ps1
+
+# WebView2 user cache data
+**/WebView2Data/
+**/EdgeRadarProfile/
+
+# Config files with personal preferences (keep template)
+config.json
