@@ -41,23 +41,6 @@ namespace RuWeatherInstaller
                 if (a == "silent" || a == "s" || a == "q") isSilent = true;
             }
 
-            if (!IsAdmin() && !isUninstall)
-            {
-                try
-                {
-                    var psi = new ProcessStartInfo()
-                    {
-                        FileName = Process.GetCurrentProcess().MainModule.FileName,
-                        Arguments = string.Join(" ", args),
-                        Verb = "runas",
-                        UseShellExecute = true
-                    };
-                    Process.Start(psi);
-                    return;
-                }
-                catch { }
-            }
-
             if (isUninstall)
             {
                 RunUninstall(isSilent);
@@ -256,8 +239,13 @@ namespace RuWeatherInstaller
             // 6. Disable default Windows 11 widgets button if requested
             if (disableDefault)
             {
-                if (progress != null) progress("Отключение штатного виджета Windows...", 0.8);
-                DisableWindows11Widgets(true);
+                if (progress != null) progress("Настройка панели задач...", 0.8);
+                try
+                {
+                    Process.Start(new ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true });
+                }
+                catch { }
+                DisableWindows11Widgets(false);
             }
 
             // 6.1 Create helper batch script for manual widget disabling if needed
@@ -725,7 +713,10 @@ namespace RuWeatherInstaller
                     Dispatcher.Invoke(new Action(delegate
                     {
                         _progBar.Value = 100;
-                        _lblStatus.Text = "✅  Виджет погоды успешно установлен и настроен!";
+                        if (disableDefault)
+                            _lblStatus.Text = "✅  Установлено! В открывшемся окне выключите тумблер «Виджеты»";
+                        else
+                            _lblStatus.Text = "✅  Виджет погоды успешно установлен и настроен!";
                         _lblStatus.Foreground = new SolidColorBrush(Color.FromRgb(100, 230, 100));
                         _btnInstall.Content = "Готово";
                         _btnInstall.IsEnabled = true;
