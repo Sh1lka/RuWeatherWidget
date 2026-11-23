@@ -519,6 +519,113 @@ namespace RuWeatherWidget
         }
     }
 
+
+    public static class ThemeManager
+    {
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll")]
+        private static extern uint GetPixel(IntPtr hDC, int nXPos, int nYPos);
+
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int nIndex);
+
+        private static bool _cachedIsTaskbarLight = false;
+        private static DateTime _lastTaskbarCheck = DateTime.MinValue;
+
+        public static bool IsTaskbarLight()
+        {
+            if ((DateTime.UtcNow - _lastTaskbarCheck).TotalSeconds < 2.0)
+            {
+                return _cachedIsTaskbarLight;
+            }
+            _lastTaskbarCheck = DateTime.UtcNow;
+            _cachedIsTaskbarLight = CheckTaskbarLightDirect();
+            return _cachedIsTaskbarLight;
+        }
+
+        private static bool CheckTaskbarLightDirect()
+        {
+            try
+            {
+                // 1. Check screen sampling at taskbar location (sample area to right of widget)
+                int screenW = GetSystemMetrics(0);
+                int screenH = GetSystemMetrics(1);
+                if (screenW > 0 && screenH > 0)
+                {
+                    int taskbarY = screenH - 20;
+                    IntPtr hdc = GetDC(IntPtr.Zero);
+                    if (hdc != IntPtr.Zero)
+                    {
+                        long totR = 0, totG = 0, totB = 0;
+                        int cnt = 0;
+                        int[] sampleX = new int[] { 220, 260, 300, 340, 380 };
+                        for (int i = 0; i < sampleX.Length; i++)
+                        {
+                            if (sampleX[i] < screenW)
+                            {
+                                uint c = GetPixel(hdc, sampleX[i], taskbarY);
+                                if (c != 0xFFFFFFFF)
+                                {
+                                    totR += (c & 0xFF);
+                                    totG += ((c >> 8) & 0xFF);
+                                    totB += ((c >> 16) & 0xFF);
+                                    cnt++;
+                                }
+                            }
+                        }
+                        ReleaseDC(IntPtr.Zero, hdc);
+
+                        if (cnt > 0)
+                        {
+                            double lum = 0.299 * (totR / cnt) + 0.587 * (totG / cnt) + 0.114 * (totB / cnt);
+                            return lum > 135.0;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // 2. Fallback to Windows Themes registry
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    if (key != null)
+                    {
+                        object sysTheme = key.GetValue("SystemUsesLightTheme");
+                        if (sysTheme is int && (int)sysTheme == 1) return true;
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        public static bool IsAppLight()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    if (key != null)
+                    {
+                        object appTheme = key.GetValue("AppsUseLightTheme");
+                        if (appTheme is int && (int)appTheme == 1) return true;
+                        if (appTheme is int && (int)appTheme == 0) return false;
+                    }
+                }
+            }
+            catch { }
+            return IsTaskbarLight();
+        }
+    }
+
     public class TaskbarWidgetWindow : Window
     {
         private Program _app;
@@ -527,6 +634,9 @@ namespace RuWeatherWidget
         private TextBlock _txtTemp;
         private TextBlock _txtCond;
         private DispatcherTimer _posTimer;
+        private bool _isHovered = false;
+        private bool _currentIsLight = false;
+        private WeatherData _lastWeatherData = null;
 
         [DllImport("user32.dll")]
         public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
@@ -544,26 +654,8 @@ namespace RuWeatherWidget
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
-        [DllImport("gdi32.dll")]
-        public static extern IntPtr CreateRectRgn(int nLeftRect, int nTopRect, int nRightRect, int nBottomRect);
-
-        [DllImport("gdi32.dll")]
-        public static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int cx, int cy);
-
-        [DllImport("gdi32.dll")]
-        public static extern int CombineRgn(IntPtr hrgnDest, IntPtr hrgnSrc1, IntPtr hrgnSrc2, int fnCombineMode);
-
-        [DllImport("gdi32.dll")]
-        public static extern bool DeleteObject(IntPtr hObject);
-
         [DllImport("user32.dll")]
         public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
-
-        public const int RGN_DIFF = 4;
-        private IntPtr _appliedTrayHwnd = IntPtr.Zero;
-        private int _lastHoleLeft = -1;
-        private int _lastHoleTop = -1;
-        private int _holeRefreshCounter = 0;
 
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         public const uint SWP_SHOWWINDOW = 0x0040;
@@ -590,6 +682,7 @@ namespace RuWeatherWidget
             Left = 10;
             Top = SystemParameters.PrimaryScreenHeight - 44;
 
+            RestoreTaskbar();
             BuildUI();
 
             Loaded += delegate
@@ -598,6 +691,7 @@ namespace RuWeatherWidget
                 int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
                 SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
 
+                RestoreTaskbar();
                 UpdatePosition();
             };
 
@@ -618,7 +712,7 @@ namespace RuWeatherWidget
             _hoverBorder.Margin = new Thickness(0);
             _hoverBorder.Padding = new Thickness(8, 2, 8, 2);
             _hoverBorder.Cursor = Cursors.Hand;
-            ApplyStyle();
+            _hoverBorder.CornerRadius = new CornerRadius(6);
 
             var stack = new StackPanel();
             stack.Orientation = Orientation.Horizontal;
@@ -639,13 +733,11 @@ namespace RuWeatherWidget
             _txtTemp.Text = "...";
             _txtTemp.FontSize = 12;
             _txtTemp.FontWeight = FontWeights.SemiBold;
-            _txtTemp.Foreground = Brushes.White;
             _txtTemp.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
             _txtCond = new TextBlock();
             _txtCond.Text = "Загрузка...";
             _txtCond.FontSize = 10.5;
-            _txtCond.Foreground = new SolidColorBrush(Color.FromRgb(215, 215, 215));
             _txtCond.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
             _txtCond.TextTrimming = TextTrimming.CharacterEllipsis;
             _txtCond.MaxWidth = 112;
@@ -658,14 +750,17 @@ namespace RuWeatherWidget
             outerContainer.Children.Add(_hoverBorder);
             Content = outerContainer;
 
+            ApplyStyle();
+
             _hoverBorder.MouseEnter += delegate
             {
-                _hoverBorder.Background = new SolidColorBrush(Color.FromRgb(46, 46, 46));
-                _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(100, 255, 255, 255));
+                _isHovered = true;
+                ApplyStyle();
             };
 
             _hoverBorder.MouseLeave += delegate
             {
+                _isHovered = false;
                 ApplyStyle();
             };
 
@@ -787,9 +882,10 @@ namespace RuWeatherWidget
 
         public void UpdateWeather(WeatherData data)
         {
+            _lastWeatherData = data;
             _txtTemp.Text = data.Temp;
             _txtCond.Text = data.Condition;
-            WeatherIcons.DrawIcon(_iconCanvas, data.IconType, 28);
+            ApplyStyle();
         }
 
         public void ShowError(string msg)
@@ -800,22 +896,58 @@ namespace RuWeatherWidget
         private void ApplyStyle()
         {
             if (_hoverBorder == null) return;
-            _hoverBorder.Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
-            _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(55, 255, 255, 255));
-            _hoverBorder.BorderThickness = new Thickness(1);
-            _hoverBorder.CornerRadius = new CornerRadius(6);
+            bool isLight = ThemeManager.IsTaskbarLight();
+            _currentIsLight = isLight;
 
-            var shadow = new DropShadowEffect();
-            shadow.BlurRadius = 8;
-            shadow.ShadowDepth = 1;
-            shadow.Opacity = 0.35;
-            shadow.Color = Colors.Black;
-            _hoverBorder.Effect = shadow;
+            if (_isHovered)
+            {
+                if (isLight)
+                {
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(24, 0, 0, 0));
+                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(32, 0, 0, 0));
+                }
+                else
+                {
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(32, 255, 255, 255));
+                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+                }
+                _hoverBorder.BorderThickness = new Thickness(1);
+            }
+            else
+            {
+                // 100% transparent in idle state so the native Windows 11 taskbar theme/acrylic shines through!
+                _hoverBorder.Background = Brushes.Transparent;
+                _hoverBorder.BorderBrush = Brushes.Transparent;
+                _hoverBorder.BorderThickness = new Thickness(0);
+            }
+            _hoverBorder.CornerRadius = new CornerRadius(6);
+            _hoverBorder.Effect = null;
+
+            if (isLight)
+            {
+                _txtTemp.Foreground = new SolidColorBrush(Color.FromRgb(24, 24, 24));
+                _txtCond.Foreground = new SolidColorBrush(Color.FromRgb(75, 75, 75));
+            }
+            else
+            {
+                _txtTemp.Foreground = Brushes.White;
+                _txtCond.Foreground = new SolidColorBrush(Color.FromRgb(215, 215, 215));
+            }
+
+            if (_lastWeatherData != null && _iconCanvas != null)
+            {
+                WeatherIcons.DrawIcon(_iconCanvas, _lastWeatherData.IconType, 28, isLight);
+            }
         }
 
         public void UpdatePosition()
         {
-            ApplyStyle();
+            bool isLight = ThemeManager.IsTaskbarLight();
+            if (isLight != _currentIsLight)
+            {
+                _currentIsLight = isLight;
+                ApplyStyle();
+            }
 
             IntPtr hTray = FindWindow("Shell_TrayWnd", null);
             int trayTop = 0;
@@ -855,78 +987,39 @@ namespace RuWeatherWidget
             {
                 SetWindowPos(helper.Handle, HWND_TOPMOST, (int)(targetLeft * dpiX), targetTop, (int)(Width * dpiX), (int)(Height * dpiY), SWP_SHOWWINDOW | SWP_NOACTIVATE);
             }
-
-            _holeRefreshCounter++;
-            if (_holeRefreshCounter % 10 == 1 || _appliedTrayHwnd == IntPtr.Zero)
-            {
-                UpdateTaskbarHole(dpiX, dpiY);
-            }
-        }
-
-        public void UpdateTaskbarHole(double dpiX = 1.0, double dpiY = 1.0)
-        {
-            try
-            {
-                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-                if (hTray == IntPtr.Zero) return;
-
-                RECT r;
-                GetWindowRect(hTray, out r);
-                int w = r.Right - r.Left;
-                int h = r.Bottom - r.Top;
-
-                int holeLeft = (int)(10 * dpiX);
-                int holeTop = (h - (int)(Height * dpiY)) / 2;
-                int holeRight = holeLeft + (int)(Width * dpiX);
-                int holeBottom = holeTop + (int)(Height * dpiY);
-                int radius = (int)(12 * dpiX);
-
-                if (_appliedTrayHwnd == hTray && _lastHoleLeft == holeLeft && _lastHoleTop == holeTop && (_holeRefreshCounter % 20 != 1))
-                    return;
-
-                IntPtr rgnFull = CreateRectRgn(0, 0, w, h);
-                IntPtr rgnHole = CreateRoundRectRgn(holeLeft, holeTop, holeRight, holeBottom, radius, radius);
-                IntPtr rgnResult = CreateRectRgn(0, 0, 0, 0);
-
-                CombineRgn(rgnResult, rgnFull, rgnHole, RGN_DIFF);
-                SetWindowRgn(hTray, rgnResult, true);
-
-                DeleteObject(rgnFull);
-                DeleteObject(rgnHole);
-
-                _appliedTrayHwnd = hTray;
-                _lastHoleLeft = holeLeft;
-                _lastHoleTop = holeTop;
-            }
-            catch { }
         }
 
         public void RestoreTaskbar()
         {
             try
             {
-                if (_appliedTrayHwnd != IntPtr.Zero)
+                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+                if (hTray != IntPtr.Zero)
                 {
-                    SetWindowRgn(_appliedTrayHwnd, IntPtr.Zero, true);
-                    _appliedTrayHwnd = IntPtr.Zero;
-                    _lastHoleLeft = -1;
-                    _lastHoleTop = -1;
+                    SetWindowRgn(hTray, IntPtr.Zero, true);
                 }
             }
             catch { }
         }
     }
-
     public class FlyoutWindow : Window
     {
         private Program _app;
         private int _currentPage = 0; // 0 = Forecast, 1 = Radar
+
+        // Root & Container elements
+        private Border _mainBorder;
 
         // Navigation elements
         private Button _tabForecast;
         private Button _tabRadar;
         private Grid _pageForecast;
         private Grid _pageRadar;
+
+        private Button _btnSearch;
+        private Button _btnInterval;
+        private Button _btnRefresh;
+        private Button _btnClose;
 
         // Page 1 Forecast elements
         private TextBlock _txtCity;
@@ -935,13 +1028,23 @@ namespace RuWeatherWidget
         private TextBlock _txtHeroTemp;
         private TextBlock _txtHeroCond;
         private TextBlock _txtHeroFeels;
+        private Border _tileHum;
+        private Border _tilePress;
+        private Border _tileSun;
+        private Border _tileSet;
+        private TextBlock _lblHumTitle;
+        private TextBlock _lblPressTitle;
+        private TextBlock _lblSunTitle;
+        private TextBlock _lblSetTitle;
         private TextBlock _txtHumidity;
         private TextBlock _txtPressure;
         private TextBlock _txtSunrise;
         private TextBlock _txtSunset;
+        private TextBlock _lblDailyTitle;
         private StackPanel _dailyPanel;
 
         // Page 2 Radar elements
+        private Border _headCard;
         private TextBlock _txtRadarCity;
         private TextBlock _txtRadarStatus;
         private Microsoft.Web.WebView2.Wpf.WebView2 _webView;
@@ -950,6 +1053,7 @@ namespace RuWeatherWidget
         private bool _isWebViewInitialized = false;
         private string _lastRadarUrl = "";
         private string _currentCity = "";
+        private WeatherData _lastData = null;
 
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
@@ -1041,12 +1145,12 @@ namespace RuWeatherWidget
 
         private void BuildUI()
         {
-            var mainBorder = new Border();
-            mainBorder.CornerRadius = new CornerRadius(8);
-            mainBorder.Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
-            mainBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
-            mainBorder.BorderThickness = new Thickness(1);
-            mainBorder.Padding = new Thickness(14);
+            _mainBorder = new Border();
+            _mainBorder.CornerRadius = new CornerRadius(8);
+            _mainBorder.Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
+            _mainBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
+            _mainBorder.BorderThickness = new Thickness(1);
+            _mainBorder.Padding = new Thickness(14);
 
             var rootGrid = new Grid();
             rootGrid.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto }); // 0: Top Nav bar
@@ -1078,30 +1182,29 @@ namespace RuWeatherWidget
             var btnStack = new StackPanel();
             btnStack.Orientation = Orientation.Horizontal;
 
-            var btnSearch = CreateIconButton("🔍", "Выбрать город");
-            btnSearch.Click += delegate
+            _btnSearch = CreateIconButton("🔍", "Выбрать город");
+            _btnSearch.Click += delegate
             {
                 var dlg = new CitySearchDialog(_app);
                 dlg.ShowDialog();
             };
-            btnStack.Children.Add(btnSearch);
+            btnStack.Children.Add(_btnSearch);
 
-            var btnInterval = CreateIconButton("⏱️", "Интервал обновления");
-            btnInterval.Click += delegate
+            _btnInterval = CreateIconButton("⏱️", "Интервал обновления");
+            _btnInterval.Click += delegate
             {
                 var dlg = new IntervalDialog(_app);
                 dlg.ShowDialog();
             };
-            btnStack.Children.Add(btnInterval);
+            btnStack.Children.Add(_btnInterval);
 
-            var btnRefresh = CreateIconButton("🔄", "Обновить погоду");
-            btnRefresh.Click += delegate { _app.FetchWeatherAsync(); };
-            btnStack.Children.Add(btnRefresh);
+            _btnRefresh = CreateIconButton("🔄", "Обновить погоду");
+            _btnRefresh.Click += delegate { _app.FetchWeatherAsync(); };
+            btnStack.Children.Add(_btnRefresh);
 
-            var btnClose = CreateIconButton("✕", "Закрыть (Esc)");
-            btnClose.Foreground = new SolidColorBrush(Color.FromRgb(200, 200, 200));
-            btnClose.Click += delegate { Hide(); };
-            btnStack.Children.Add(btnClose);
+            _btnClose = CreateIconButton("✕", "Закрыть (Esc)");
+            _btnClose.Click += delegate { Hide(); };
+            btnStack.Children.Add(_btnClose);
 
             Grid.SetColumn(btnStack, 1);
             navGrid.Children.Add(btnStack);
@@ -1123,9 +1226,10 @@ namespace RuWeatherWidget
 
             rootGrid.Children.Add(pagesGrid);
 
-            mainBorder.Child = rootGrid;
-            Content = mainBorder;
+            _mainBorder.Child = rootGrid;
+            Content = _mainBorder;
 
+            ApplyTheme();
             SetPage(0);
         }
 
@@ -1144,17 +1248,37 @@ namespace RuWeatherWidget
 
         private void UpdateTabStyle(Button btn, bool isActive)
         {
+            if (btn == null) return;
+            bool isLight = ThemeManager.IsAppLight();
             if (isActive)
             {
-                btn.Background = new SolidColorBrush(Color.FromArgb(50, 0, 120, 215));
-                btn.Foreground = new SolidColorBrush(Color.FromRgb(76, 194, 255));
-                btn.BorderBrush = new SolidColorBrush(Color.FromArgb(120, 0, 120, 215));
+                if (isLight)
+                {
+                    btn.Background = new SolidColorBrush(Color.FromArgb(40, 0, 103, 192));
+                    btn.Foreground = new SolidColorBrush(Color.FromRgb(0, 103, 192));
+                    btn.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 0, 103, 192));
+                }
+                else
+                {
+                    btn.Background = new SolidColorBrush(Color.FromArgb(50, 0, 120, 215));
+                    btn.Foreground = new SolidColorBrush(Color.FromRgb(76, 194, 255));
+                    btn.BorderBrush = new SolidColorBrush(Color.FromArgb(120, 0, 120, 215));
+                }
             }
             else
             {
-                btn.Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255));
-                btn.Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180));
-                btn.BorderBrush = new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
+                if (isLight)
+                {
+                    btn.Background = new SolidColorBrush(Color.FromArgb(15, 0, 0, 0));
+                    btn.Foreground = new SolidColorBrush(Color.FromRgb(80, 80, 80));
+                    btn.BorderBrush = new SolidColorBrush(Color.FromArgb(25, 0, 0, 0));
+                }
+                else
+                {
+                    btn.Background = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255));
+                    btn.Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180));
+                    btn.BorderBrush = new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
+                }
             }
         }
 
@@ -1166,29 +1290,42 @@ namespace RuWeatherWidget
             btn.Width = 26;
             btn.Height = 26;
             btn.Margin = new Thickness(4, 0, 0, 0);
-            btn.Background = new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
-            btn.Foreground = Brushes.White;
-            btn.BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
             btn.BorderThickness = new Thickness(1);
             btn.Cursor = Cursors.Hand;
             btn.ToolTip = tooltip;
+            ApplyIconButtonTheme(btn, ThemeManager.IsAppLight());
             return btn;
+        }
+
+        private void ApplyIconButtonTheme(Button btn, bool isLight)
+        {
+            if (btn == null) return;
+            if (isLight)
+            {
+                btn.Background = new SolidColorBrush(Color.FromArgb(15, 0, 0, 0));
+                btn.Foreground = new SolidColorBrush(Color.FromRgb(30, 30, 30));
+                btn.BorderBrush = new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
+            }
+            else
+            {
+                btn.Background = new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
+                btn.Foreground = Brushes.White;
+                btn.BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+            }
         }
 
         public void SetPage(int page)
         {
             _currentPage = page;
+            UpdateTabStyle(_tabForecast, page == 0);
+            UpdateTabStyle(_tabRadar, page == 1);
             if (page == 0)
             {
-                UpdateTabStyle(_tabForecast, true);
-                UpdateTabStyle(_tabRadar, false);
                 _pageForecast.Visibility = Visibility.Visible;
                 _pageRadar.Visibility = Visibility.Collapsed;
             }
             else
             {
-                UpdateTabStyle(_tabForecast, false);
-                UpdateTabStyle(_tabRadar, true);
                 _pageForecast.Visibility = Visibility.Collapsed;
                 _pageRadar.Visibility = Visibility.Visible;
                 LoadRadarMap();
@@ -1298,33 +1435,33 @@ namespace RuWeatherWidget
             _txtSunrise = new TextBlock();
             _txtSunset = new TextBlock();
 
-            var tileHum = MakeMetricTile("💧 Влажность", _txtHumidity);
-            var tilePress = MakeMetricTile("🌡️ Давление", _txtPressure);
-            var tileSun = MakeMetricTile("🌅 Восход", _txtSunrise);
-            var tileSet = MakeMetricTile("🌇 Закат", _txtSunset);
+            _tileHum = MakeMetricTile("💧 Влажность", _txtHumidity, out _lblHumTitle);
+            _tilePress = MakeMetricTile("🌡️ Давление", _txtPressure, out _lblPressTitle);
+            _tileSun = MakeMetricTile("🌅 Восход", _txtSunrise, out _lblSunTitle);
+            _tileSet = MakeMetricTile("🌇 Закат", _txtSunset, out _lblSetTitle);
 
-            Grid.SetRow(tileHum, 0); Grid.SetColumn(tileHum, 0);
-            Grid.SetRow(tilePress, 0); Grid.SetColumn(tilePress, 1);
-            Grid.SetRow(tileSun, 1); Grid.SetColumn(tileSun, 0);
-            Grid.SetRow(tileSet, 1); Grid.SetColumn(tileSet, 1);
+            Grid.SetRow(_tileHum, 0); Grid.SetColumn(_tileHum, 0);
+            Grid.SetRow(_tilePress, 0); Grid.SetColumn(_tilePress, 1);
+            Grid.SetRow(_tileSun, 1); Grid.SetColumn(_tileSun, 0);
+            Grid.SetRow(_tileSet, 1); Grid.SetColumn(_tileSet, 1);
 
-            metricsGrid.Children.Add(tileHum);
-            metricsGrid.Children.Add(tilePress);
-            metricsGrid.Children.Add(tileSun);
-            metricsGrid.Children.Add(tileSet);
+            metricsGrid.Children.Add(_tileHum);
+            metricsGrid.Children.Add(_tilePress);
+            metricsGrid.Children.Add(_tileSun);
+            metricsGrid.Children.Add(_tileSet);
 
             Grid.SetRow(metricsGrid, 2);
             _pageForecast.Children.Add(metricsGrid);
 
             // 4. Daily Title
-            var lblDaily = new TextBlock();
-            lblDaily.Text = "ПРОГНОЗ НА 5 ДНЕЙ";
-            lblDaily.FontSize = 10;
-            lblDaily.FontWeight = FontWeights.Bold;
-            lblDaily.Foreground = new SolidColorBrush(Color.FromRgb(150, 150, 150));
-            lblDaily.Margin = new Thickness(0, 0, 0, 6);
-            Grid.SetRow(lblDaily, 3);
-            _pageForecast.Children.Add(lblDaily);
+            _lblDailyTitle = new TextBlock();
+            _lblDailyTitle.Text = "ПРОГНОЗ НА 5 ДНЕЙ";
+            _lblDailyTitle.FontSize = 10;
+            _lblDailyTitle.FontWeight = FontWeights.Bold;
+            _lblDailyTitle.Foreground = new SolidColorBrush(Color.FromRgb(150, 150, 150));
+            _lblDailyTitle.Margin = new Thickness(0, 0, 0, 6);
+            Grid.SetRow(_lblDailyTitle, 3);
+            _pageForecast.Children.Add(_lblDailyTitle);
 
             // 5. Daily Cards
             _dailyPanel = new StackPanel();
@@ -1341,13 +1478,13 @@ namespace RuWeatherWidget
             _pageRadar.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto }); // 2: Open in browser button
 
             // 1. Radar Header Card
-            var headCard = new Border();
-            headCard.Background = new SolidColorBrush(Color.FromRgb(40, 40, 40));
-            headCard.BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
-            headCard.BorderThickness = new Thickness(1);
-            headCard.CornerRadius = new CornerRadius(6);
-            headCard.Padding = new Thickness(10, 7, 10, 7);
-            headCard.Margin = new Thickness(0, 0, 0, 8);
+            _headCard = new Border();
+            _headCard.Background = new SolidColorBrush(Color.FromRgb(40, 40, 40));
+            _headCard.BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+            _headCard.BorderThickness = new Thickness(1);
+            _headCard.CornerRadius = new CornerRadius(6);
+            _headCard.Padding = new Thickness(10, 7, 10, 7);
+            _headCard.Margin = new Thickness(0, 0, 0, 8);
 
             var headStack = new StackPanel();
             _txtRadarCity = new TextBlock();
@@ -1364,9 +1501,9 @@ namespace RuWeatherWidget
 
             headStack.Children.Add(_txtRadarCity);
             headStack.Children.Add(_txtRadarStatus);
-            headCard.Child = headStack;
-            Grid.SetRow(headCard, 0);
-            _pageRadar.Children.Add(headCard);
+            _headCard.Child = headStack;
+            Grid.SetRow(_headCard, 0);
+            _pageRadar.Children.Add(_headCard);
 
             // 2. WebView2 Container
             _radarContainer = new Border();
@@ -1536,35 +1673,128 @@ namespace RuWeatherWidget
             }));
         }
 
-        private Border MakeMetricTile(string label, TextBlock valBlock)
+        private Border MakeMetricTile(string label, TextBlock valBlock, out TextBlock lblBlock)
         {
             var b = new Border();
             b.CornerRadius = new CornerRadius(6);
-            b.Background = new SolidColorBrush(Color.FromRgb(42, 42, 42));
             b.Padding = new Thickness(10, 6, 10, 6);
             b.Margin = new Thickness(3);
 
             var sp = new StackPanel();
-            var lbl = new TextBlock();
-            lbl.Text = label;
-            lbl.FontSize = 10.5;
-            lbl.Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 160));
-            lbl.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
+            lblBlock = new TextBlock();
+            lblBlock.Text = label;
+            lblBlock.FontSize = 10.5;
+            lblBlock.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
             valBlock.FontSize = 13;
             valBlock.FontWeight = FontWeights.SemiBold;
-            valBlock.Foreground = Brushes.White;
             valBlock.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
             valBlock.Margin = new Thickness(0, 1, 0, 0);
 
-            sp.Children.Add(lbl);
+            sp.Children.Add(lblBlock);
             sp.Children.Add(valBlock);
             b.Child = sp;
             return b;
         }
 
+        private void ApplyTileTheme(Border tile, TextBlock lbl, TextBlock val, bool isLight)
+        {
+            if (tile == null) return;
+            if (isLight)
+            {
+                tile.Background = Brushes.White;
+                tile.BorderBrush = new SolidColorBrush(Color.FromRgb(225, 225, 225));
+                tile.BorderThickness = new Thickness(1);
+                if (lbl != null) lbl.Foreground = new SolidColorBrush(Color.FromRgb(110, 110, 110));
+                if (val != null) val.Foreground = new SolidColorBrush(Color.FromRgb(24, 24, 24));
+            }
+            else
+            {
+                tile.Background = new SolidColorBrush(Color.FromRgb(42, 42, 42));
+                tile.BorderBrush = Brushes.Transparent;
+                tile.BorderThickness = new Thickness(0);
+                if (lbl != null) lbl.Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 160));
+                if (val != null) val.Foreground = Brushes.White;
+            }
+        }
+
+        public void ApplyTheme()
+        {
+            bool isLight = ThemeManager.IsAppLight();
+            if (isLight)
+            {
+                Background = new SolidColorBrush(Color.FromRgb(245, 245, 245));
+                if (_mainBorder != null)
+                {
+                    _mainBorder.Background = new SolidColorBrush(Color.FromRgb(245, 245, 245));
+                    _mainBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(215, 215, 215));
+                }
+                if (_txtCity != null) _txtCity.Foreground = new SolidColorBrush(Color.FromRgb(24, 24, 24));
+                if (_txtDate != null) _txtDate.Foreground = new SolidColorBrush(Color.FromRgb(100, 100, 100));
+                if (_txtHeroTemp != null) _txtHeroTemp.Foreground = new SolidColorBrush(Color.FromRgb(24, 24, 24));
+                if (_txtHeroCond != null) _txtHeroCond.Foreground = new SolidColorBrush(Color.FromRgb(30, 30, 30));
+                if (_txtHeroFeels != null) _txtHeroFeels.Foreground = new SolidColorBrush(Color.FromRgb(100, 100, 100));
+                if (_lblDailyTitle != null) _lblDailyTitle.Foreground = new SolidColorBrush(Color.FromRgb(110, 110, 110));
+
+                ApplyTileTheme(_tileHum, _lblHumTitle, _txtHumidity, true);
+                ApplyTileTheme(_tilePress, _lblPressTitle, _txtPressure, true);
+                ApplyTileTheme(_tileSun, _lblSunTitle, _txtSunrise, true);
+                ApplyTileTheme(_tileSet, _lblSetTitle, _txtSunset, true);
+
+                if (_headCard != null)
+                {
+                    _headCard.Background = Brushes.White;
+                    _headCard.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 220, 220));
+                }
+                if (_txtRadarCity != null) _txtRadarCity.Foreground = new SolidColorBrush(Color.FromRgb(24, 24, 24));
+                if (_radarContainer != null) _radarContainer.BorderBrush = new SolidColorBrush(Color.FromRgb(215, 215, 215));
+
+                ApplyIconButtonTheme(_btnSearch, true);
+                ApplyIconButtonTheme(_btnInterval, true);
+                ApplyIconButtonTheme(_btnRefresh, true);
+                ApplyIconButtonTheme(_btnClose, true);
+            }
+            else
+            {
+                Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
+                if (_mainBorder != null)
+                {
+                    _mainBorder.Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
+                    _mainBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
+                }
+                if (_txtCity != null) _txtCity.Foreground = Brushes.White;
+                if (_txtDate != null) _txtDate.Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 160));
+                if (_txtHeroTemp != null) _txtHeroTemp.Foreground = Brushes.White;
+                if (_txtHeroCond != null) _txtHeroCond.Foreground = Brushes.White;
+                if (_txtHeroFeels != null) _txtHeroFeels.Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180));
+                if (_lblDailyTitle != null) _lblDailyTitle.Foreground = new SolidColorBrush(Color.FromRgb(150, 150, 150));
+
+                ApplyTileTheme(_tileHum, _lblHumTitle, _txtHumidity, false);
+                ApplyTileTheme(_tilePress, _lblPressTitle, _txtPressure, false);
+                ApplyTileTheme(_tileSun, _lblSunTitle, _txtSunrise, false);
+                ApplyTileTheme(_tileSet, _lblSetTitle, _txtSunset, false);
+
+                if (_headCard != null)
+                {
+                    _headCard.Background = new SolidColorBrush(Color.FromRgb(40, 40, 40));
+                    _headCard.BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+                }
+                if (_txtRadarCity != null) _txtRadarCity.Foreground = Brushes.White;
+                if (_radarContainer != null) _radarContainer.BorderBrush = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255));
+
+                ApplyIconButtonTheme(_btnSearch, false);
+                ApplyIconButtonTheme(_btnInterval, false);
+                ApplyIconButtonTheme(_btnRefresh, false);
+                ApplyIconButtonTheme(_btnClose, false);
+            }
+
+            UpdateTabStyle(_tabForecast, _currentPage == 0);
+            UpdateTabStyle(_tabRadar, _currentPage == 1);
+        }
+
         public void UpdateData(WeatherData d)
         {
+            _lastData = d;
             if (_currentCity != d.City)
             {
                 _currentCity = d.City;
@@ -1594,14 +1824,25 @@ namespace RuWeatherWidget
                 _txtRadarStatus.Foreground = new SolidColorBrush(Color.FromRgb(76, 194, 255));
             }
 
-            WeatherIcons.DrawIcon(_heroIcon, d.IconType, 52);
+            bool isLight = ThemeManager.IsAppLight();
+            WeatherIcons.DrawIcon(_heroIcon, d.IconType, 52, isLight);
 
             _dailyPanel.Children.Clear();
             foreach (var dp in d.Daily)
             {
                 var db = new Border();
                 db.CornerRadius = new CornerRadius(6);
-                db.Background = new SolidColorBrush(Color.FromRgb(38, 38, 38));
+                if (isLight)
+                {
+                    db.Background = Brushes.White;
+                    db.BorderBrush = new SolidColorBrush(Color.FromRgb(225, 225, 225));
+                    db.BorderThickness = new Thickness(1);
+                }
+                else
+                {
+                    db.Background = new SolidColorBrush(Color.FromRgb(38, 38, 38));
+                    db.BorderThickness = new Thickness(0);
+                }
                 db.Padding = new Thickness(10, 5, 10, 5);
                 db.Margin = new Thickness(0, 0, 0, 4);
 
@@ -1611,17 +1852,30 @@ namespace RuWeatherWidget
                 dg.ColumnDefinitions.Add(new ColumnDefinition() { Width = new GridLength(1, GridUnitType.Star) });
                 dg.ColumnDefinitions.Add(new ColumnDefinition() { Width = GridLength.Auto });
 
-                var dDay = new TextBlock() { Text = dp.DayName, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center };
+                var dDay = new TextBlock() {
+                    Text = dp.DayName,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
                 var dIcon = new Canvas() { Width = 18, Height = 18, VerticalAlignment = VerticalAlignment.Center };
-                WeatherIcons.DrawIcon(dIcon, dp.IconType, 18);
+                WeatherIcons.DrawIcon(dIcon, dp.IconType, 18, isLight);
 
-                var dCond = new TextBlock() { Text = dp.Condition, FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180)), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
-                var dTemp = new TextBlock() { Text = dp.TempMinMax, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, VerticalAlignment = VerticalAlignment.Center };
-
-                Grid.SetColumn(dDay, 0);
-                Grid.SetColumn(dIcon, 1);
-                Grid.SetColumn(dCond, 2);
-                Grid.SetColumn(dTemp, 3);
+                var dCond = new TextBlock() {
+                    Text = dp.Condition,
+                    FontSize = 11,
+                    Foreground = isLight ? new SolidColorBrush(Color.FromRgb(100, 100, 100)) : new SolidColorBrush(Color.FromRgb(180, 180, 180)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                };
+                var dTemp = new TextBlock() {
+                    Text = dp.TempMinMax,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
 
                 dg.Children.Add(dDay);
                 dg.Children.Add(dIcon);
@@ -1640,6 +1894,11 @@ namespace RuWeatherWidget
 
         public void PositionAbove(TaskbarWidgetWindow taskbarWin)
         {
+            ApplyTheme();
+            if (_lastData != null)
+            {
+                UpdateData(_lastData);
+            }
             Left = taskbarWin.Left;
             Top = taskbarWin.Top - Height - 8;
             if (Top < 10) Top = 10;
@@ -1667,8 +1926,6 @@ namespace RuWeatherWidget
             Height = 330;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             ResizeMode = ResizeMode.NoResize;
-            Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
-            Foreground = Brushes.White;
             FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
             BuildUI();
@@ -1676,6 +1933,10 @@ namespace RuWeatherWidget
 
         private void BuildUI()
         {
+            bool isLight = ThemeManager.IsAppLight();
+            Background = isLight ? new SolidColorBrush(Color.FromRgb(245, 245, 245)) : new SolidColorBrush(Color.FromRgb(32, 32, 32));
+            Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White;
+
             var root = new Grid();
             root.Margin = new Thickness(20);
             root.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto }); // Header
@@ -1690,7 +1951,7 @@ namespace RuWeatherWidget
                 Text = "📍  Выбор города",
                 FontSize = 16,
                 FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White,
+                Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
                 Margin = new Thickness(0, 0, 0, 12)
             };
             Grid.SetRow(lblTitle, 0);
@@ -1702,7 +1963,7 @@ namespace RuWeatherWidget
             {
                 Text = "Введите название города на русском или выберите ниже:",
                 FontSize = 11.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180)),
+                Foreground = isLight ? new SolidColorBrush(Color.FromRgb(100, 100, 100)) : new SolidColorBrush(Color.FromRgb(180, 180, 180)),
                 Margin = new Thickness(0, 0, 0, 6)
             };
             inputStack.Children.Add(lblInput);
@@ -1712,9 +1973,9 @@ namespace RuWeatherWidget
                 Text = _app.Config.City,
                 FontSize = 13,
                 Padding = new Thickness(8, 6, 8, 6),
-                Background = new SolidColorBrush(Color.FromRgb(44, 44, 44)),
-                Foreground = Brushes.White,
-                BorderBrush = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
+                Background = isLight ? Brushes.White : new SolidColorBrush(Color.FromRgb(44, 44, 44)),
+                Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
+                BorderBrush = isLight ? new SolidColorBrush(Color.FromRgb(200, 200, 200)) : new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
                 BorderThickness = new Thickness(1)
             };
             _txtCity.KeyDown += (s, e) =>
@@ -1739,9 +2000,9 @@ namespace RuWeatherWidget
                     FontSize = 11,
                     Padding = new Thickness(7, 3, 7, 3),
                     Margin = new Thickness(0, 0, 5, 5),
-                    Background = new SolidColorBrush(Color.FromRgb(46, 46, 46)),
-                    Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220)),
-                    BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                    Background = isLight ? Brushes.White : new SolidColorBrush(Color.FromRgb(46, 46, 46)),
+                    Foreground = isLight ? new SolidColorBrush(Color.FromRgb(40, 40, 40)) : new SolidColorBrush(Color.FromRgb(220, 220, 220)),
+                    BorderBrush = isLight ? new SolidColorBrush(Color.FromRgb(215, 215, 215)) : new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
                     BorderThickness = new Thickness(1),
                     Cursor = Cursors.Hand
                 };
@@ -1760,7 +2021,7 @@ namespace RuWeatherWidget
             {
                 Text = "",
                 FontSize = 11.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(76, 194, 255)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0, 120, 215)),
                 VerticalAlignment = VerticalAlignment.Center
             };
             Grid.SetRow(_lblStatus, 3);
@@ -1778,9 +2039,9 @@ namespace RuWeatherWidget
                 Width = 90,
                 Height = 30,
                 Margin = new Thickness(0, 0, 8, 0),
-                Background = new SolidColorBrush(Color.FromRgb(48, 48, 48)),
-                Foreground = Brushes.White,
-                BorderBrush = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+                Background = isLight ? Brushes.White : new SolidColorBrush(Color.FromRgb(48, 48, 48)),
+                Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
+                BorderBrush = isLight ? new SolidColorBrush(Color.FromRgb(210, 210, 210)) : new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
                 BorderThickness = new Thickness(1),
                 Cursor = Cursors.Hand
             };
@@ -1817,7 +2078,7 @@ namespace RuWeatherWidget
 
             _btnApply.IsEnabled = false;
             _lblStatus.Text = "Поиск и проверка города...";
-            _lblStatus.Foreground = new SolidColorBrush(Color.FromRgb(76, 194, 255));
+            _lblStatus.Foreground = new SolidColorBrush(Color.FromRgb(0, 120, 215));
 
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -1829,7 +2090,7 @@ namespace RuWeatherWidget
                 {
                     _app.SetCity(disp, slug, lat, lon);
                     _lblStatus.Text = "✅ Город установлен!";
-                    _lblStatus.Foreground = new SolidColorBrush(Color.FromRgb(100, 220, 100));
+                    _lblStatus.Foreground = new SolidColorBrush(Color.FromRgb(40, 180, 40));
 
                     var timer = new DispatcherTimer();
                     timer.Interval = TimeSpan.FromMilliseconds(400);
@@ -1860,8 +2121,6 @@ namespace RuWeatherWidget
             Height = 270;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             ResizeMode = ResizeMode.NoResize;
-            Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
-            Foreground = Brushes.White;
             FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
             BuildUI();
@@ -1869,6 +2128,10 @@ namespace RuWeatherWidget
 
         private void BuildUI()
         {
+            bool isLight = ThemeManager.IsAppLight();
+            Background = isLight ? new SolidColorBrush(Color.FromRgb(245, 245, 245)) : new SolidColorBrush(Color.FromRgb(32, 32, 32));
+            Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White;
+
             var root = new Grid();
             root.Margin = new Thickness(20);
             root.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto }); // Header
@@ -1883,7 +2146,7 @@ namespace RuWeatherWidget
                 Text = "⏱️  Интервал обновления погоды",
                 FontSize = 15,
                 FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White,
+                Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
                 Margin = new Thickness(0, 0, 0, 14)
             };
             Grid.SetRow(lblTitle, 0);
@@ -1896,15 +2159,31 @@ namespace RuWeatherWidget
             {
                 int val = p;
                 string label = val < 60 ? (val + " мин") : (val / 60 + " ч");
+                bool isSelected = (val == _app.Config.RefreshIntervalMinutes);
+
+                Brush chipBg, chipFg, chipBorder;
+                if (isSelected)
+                {
+                    chipBg = isLight ? new SolidColorBrush(Color.FromArgb(40, 0, 120, 215)) : new SolidColorBrush(Color.FromArgb(60, 0, 120, 215));
+                    chipFg = isLight ? new SolidColorBrush(Color.FromRgb(0, 100, 200)) : new SolidColorBrush(Color.FromRgb(76, 194, 255));
+                    chipBorder = new SolidColorBrush(Color.FromRgb(0, 120, 215));
+                }
+                else
+                {
+                    chipBg = isLight ? Brushes.White : new SolidColorBrush(Color.FromRgb(46, 46, 46));
+                    chipFg = isLight ? new SolidColorBrush(Color.FromRgb(40, 40, 40)) : new SolidColorBrush(Color.FromRgb(220, 220, 220));
+                    chipBorder = isLight ? new SolidColorBrush(Color.FromRgb(215, 215, 215)) : new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+                }
+
                 var btn = new Button()
                 {
                     Content = label,
                     FontSize = 11,
                     Padding = new Thickness(9, 4, 9, 4),
                     Margin = new Thickness(0, 0, 6, 6),
-                    Background = (val == _app.Config.RefreshIntervalMinutes) ? new SolidColorBrush(Color.FromArgb(60, 0, 120, 215)) : new SolidColorBrush(Color.FromRgb(46, 46, 46)),
-                    Foreground = (val == _app.Config.RefreshIntervalMinutes) ? new SolidColorBrush(Color.FromRgb(76, 194, 255)) : new SolidColorBrush(Color.FromRgb(220, 220, 220)),
-                    BorderBrush = (val == _app.Config.RefreshIntervalMinutes) ? new SolidColorBrush(Color.FromRgb(0, 120, 215)) : new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                    Background = chipBg,
+                    Foreground = chipFg,
+                    BorderBrush = chipBorder,
                     BorderThickness = new Thickness(1),
                     Cursor = Cursors.Hand
                 };
@@ -1923,7 +2202,7 @@ namespace RuWeatherWidget
             {
                 Text = "Или укажите интервал в минутах (от 1 до 720):",
                 FontSize = 11,
-                Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180)),
+                Foreground = isLight ? new SolidColorBrush(Color.FromRgb(100, 100, 100)) : new SolidColorBrush(Color.FromRgb(180, 180, 180)),
                 Margin = new Thickness(0, 0, 0, 5)
             };
             inputStack.Children.Add(lblInput);
@@ -1935,9 +2214,9 @@ namespace RuWeatherWidget
                 Padding = new Thickness(8, 5, 8, 5),
                 Width = 100,
                 HorizontalAlignment = HorizontalAlignment.Left,
-                Background = new SolidColorBrush(Color.FromRgb(44, 44, 44)),
-                Foreground = Brushes.White,
-                BorderBrush = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
+                Background = isLight ? Brushes.White : new SolidColorBrush(Color.FromRgb(44, 44, 44)),
+                Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
+                BorderBrush = isLight ? new SolidColorBrush(Color.FromRgb(200, 200, 200)) : new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
                 BorderThickness = new Thickness(1)
             };
             _txtMinutes.KeyDown += (s, e) =>
@@ -1961,9 +2240,9 @@ namespace RuWeatherWidget
                 Width = 90,
                 Height = 30,
                 Margin = new Thickness(0, 0, 8, 0),
-                Background = new SolidColorBrush(Color.FromRgb(48, 48, 48)),
-                Foreground = Brushes.White,
-                BorderBrush = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+                Background = isLight ? Brushes.White : new SolidColorBrush(Color.FromRgb(48, 48, 48)),
+                Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
+                BorderBrush = isLight ? new SolidColorBrush(Color.FromRgb(210, 210, 210)) : new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
                 BorderThickness = new Thickness(1),
                 Cursor = Cursors.Hand
             };
@@ -2025,50 +2304,50 @@ namespace RuWeatherWidget
             return "cloudy";
         }
 
-        public static void DrawIcon(Canvas canvas, string iconType, double size)
+        public static void DrawIcon(Canvas canvas, string iconType, double size, bool isLight = false)
         {
             canvas.Children.Clear();
             canvas.Width = size;
             canvas.Height = size;
 
             if (iconType == "sun")
-                DrawSun(canvas, size);
+                DrawSun(canvas, size, isLight);
             else if (iconType == "partly_cloudy")
-                DrawSunBehindCloud(canvas, size);
+                DrawSunBehindCloud(canvas, size, isLight);
             else if (iconType == "thunder")
-                DrawThunder(canvas, size);
+                DrawThunder(canvas, size, isLight);
             else if (iconType == "snow")
-                DrawSnow(canvas, size);
+                DrawSnow(canvas, size, isLight);
             else if (iconType == "rain")
-                DrawRain(canvas, size);
+                DrawRain(canvas, size, isLight);
             else if (iconType == "fog")
-                DrawFog(canvas, size);
+                DrawFog(canvas, size, isLight);
             else
-                DrawCloud(canvas, size, Color.FromRgb(165, 195, 225));
+                DrawCloud(canvas, size, isLight ? Color.FromRgb(105, 140, 175) : Color.FromRgb(165, 195, 225));
         }
 
-        private static void DrawSun(Canvas c, double s)
+        private static void DrawSun(Canvas c, double s, bool isLight)
         {
             var sun = new Ellipse();
             sun.Width = s * 0.72;
             sun.Height = s * 0.72;
-            sun.Fill = new SolidColorBrush(Color.FromRgb(255, 195, 0));
+            sun.Fill = new SolidColorBrush(isLight ? Color.FromRgb(235, 145, 0) : Color.FromRgb(255, 195, 0));
             Canvas.SetLeft(sun, s * 0.14);
             Canvas.SetTop(sun, s * 0.14);
             c.Children.Add(sun);
         }
 
-        private static void DrawSunBehindCloud(Canvas c, double s)
+        private static void DrawSunBehindCloud(Canvas c, double s, bool isLight)
         {
             var sun = new Ellipse();
             sun.Width = s * 0.45;
             sun.Height = s * 0.45;
-            sun.Fill = new SolidColorBrush(Color.FromRgb(255, 195, 0));
+            sun.Fill = new SolidColorBrush(isLight ? Color.FromRgb(235, 145, 0) : Color.FromRgb(255, 195, 0));
             Canvas.SetLeft(sun, s * 0.45);
             Canvas.SetTop(sun, s * 0.08);
             c.Children.Add(sun);
 
-            DrawCloud(c, s * 0.9, Color.FromRgb(190, 215, 240));
+            DrawCloud(c, s * 0.9, isLight ? Color.FromRgb(120, 155, 185) : Color.FromRgb(190, 215, 240));
         }
 
         private static void DrawCloud(Canvas c, double s, Color cloudColor)
@@ -2091,9 +2370,9 @@ namespace RuWeatherWidget
             c.Children.Add(path);
         }
 
-        private static void DrawRain(Canvas c, double s)
+        private static void DrawRain(Canvas c, double s, bool isLight)
         {
-            DrawCloud(c, s * 0.85, Color.FromRgb(150, 180, 210));
+            DrawCloud(c, s * 0.85, isLight ? Color.FromRgb(100, 135, 165) : Color.FromRgb(150, 180, 210));
             double scale = s / 40.0;
 
             for (int i = 0; i < 3; i++)
@@ -2103,7 +2382,7 @@ namespace RuWeatherWidget
                 drop.Y1 = 28 * scale;
                 drop.X2 = (11 + i * 7) * scale;
                 drop.Y2 = 34 * scale;
-                drop.Stroke = new SolidColorBrush(Color.FromRgb(70, 160, 240));
+                drop.Stroke = new SolidColorBrush(isLight ? Color.FromRgb(20, 110, 210) : Color.FromRgb(70, 160, 240));
                 drop.StrokeThickness = 2 * scale;
                 drop.StrokeStartLineCap = PenLineCap.Round;
                 drop.StrokeEndLineCap = PenLineCap.Round;
@@ -2111,9 +2390,9 @@ namespace RuWeatherWidget
             }
         }
 
-        private static void DrawSnow(Canvas c, double s)
+        private static void DrawSnow(Canvas c, double s, bool isLight)
         {
-            DrawCloud(c, s * 0.85, Color.FromRgb(170, 195, 220));
+            DrawCloud(c, s * 0.85, isLight ? Color.FromRgb(115, 150, 180) : Color.FromRgb(170, 195, 220));
             double scale = s / 40.0;
 
             for (int i = 0; i < 3; i++)
@@ -2121,16 +2400,16 @@ namespace RuWeatherWidget
                 var flake = new Ellipse();
                 flake.Width = 3.5 * scale;
                 flake.Height = 3.5 * scale;
-                flake.Fill = Brushes.White;
+                flake.Fill = isLight ? new SolidColorBrush(Color.FromRgb(60, 105, 150)) : Brushes.White;
                 Canvas.SetLeft(flake, (11 + i * 8) * scale);
                 Canvas.SetTop(flake, 29 * scale);
                 c.Children.Add(flake);
             }
         }
 
-        private static void DrawThunder(Canvas c, double s)
+        private static void DrawThunder(Canvas c, double s, bool isLight)
         {
-            DrawCloud(c, s * 0.85, Color.FromRgb(120, 140, 170));
+            DrawCloud(c, s * 0.85, isLight ? Color.FromRgb(90, 115, 145) : Color.FromRgb(120, 140, 170));
             double scale = s / 40.0;
 
             var bolt = new System.Windows.Shapes.Polygon();
@@ -2143,13 +2422,13 @@ namespace RuWeatherWidget
                 new Point(24 * scale, 29 * scale),
                 new Point(20 * scale, 29 * scale)
             };
-            bolt.Fill = new SolidColorBrush(Color.FromRgb(255, 215, 0));
+            bolt.Fill = new SolidColorBrush(isLight ? Color.FromRgb(230, 165, 0) : Color.FromRgb(255, 215, 0));
             c.Children.Add(bolt);
         }
 
-        private static void DrawFog(Canvas c, double s)
+        private static void DrawFog(Canvas c, double s, bool isLight)
         {
-            DrawCloud(c, s * 0.75, Color.FromRgb(170, 185, 205));
+            DrawCloud(c, s * 0.75, isLight ? Color.FromRgb(120, 140, 165) : Color.FromRgb(170, 185, 205));
             double scale = s / 40.0;
 
             for (int i = 0; i < 2; i++)
@@ -2159,7 +2438,7 @@ namespace RuWeatherWidget
                 line.Y1 = (28 + i * 5) * scale;
                 line.X2 = 30 * scale;
                 line.Y2 = (28 + i * 5) * scale;
-                line.Stroke = new SolidColorBrush(Color.FromRgb(200, 215, 230));
+                line.Stroke = new SolidColorBrush(isLight ? Color.FromRgb(85, 115, 145) : Color.FromRgb(200, 215, 230));
                 line.StrokeThickness = 2 * scale;
                 line.StrokeStartLineCap = PenLineCap.Round;
                 line.StrokeEndLineCap = PenLineCap.Round;
