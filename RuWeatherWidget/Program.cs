@@ -56,7 +56,7 @@ namespace RuWeatherWidget
         public bool AutoStart = true;
         public string PositionMode = "OnTaskbar";
         public int RefreshIntervalMinutes = 15;
-        public List<string> RecentCities = new List<string>() { "Санкт-Петербург", "Москва", "Новосибирск", "Екатеринбург", "Казань", "Самара", "Сочи" };
+        public List<string> RecentCities = new List<string>() { "Санкт-Петербург", "Москва", "Новосибирск" };
     }
 
     public static class CityResolver
@@ -401,10 +401,14 @@ namespace RuWeatherWidget
                 _config.Lon = gLon;
             }
 
-            if (!_config.RecentCities.Contains(displayName))
+            if (_config.RecentCities.Contains(displayName))
             {
-                _config.RecentCities.Insert(0, displayName);
-                if (_config.RecentCities.Count > 8) _config.RecentCities.RemoveAt(_config.RecentCities.Count - 1);
+                _config.RecentCities.Remove(displayName);
+            }
+            _config.RecentCities.Insert(0, displayName);
+            while (_config.RecentCities.Count > 3)
+            {
+                _config.RecentCities.RemoveAt(_config.RecentCities.Count - 1);
             }
 
             SaveConfig();
@@ -804,11 +808,6 @@ namespace RuWeatherWidget
             mRefresh.Click += delegate { _app.FetchWeatherAsync(); };
             menu.Items.Add(mRefresh);
 
-            var mRadar = new MenuItem();
-            mRadar.Header = "🌧️  Карта осадков Яндекса";
-            mRadar.Click += delegate { _app.ToggleFlyout(1); };
-            menu.Items.Add(mRadar);
-
             menu.Items.Add(new Separator());
 
             var mSearchCity = new MenuItem();
@@ -821,10 +820,13 @@ namespace RuWeatherWidget
             };
             menu.Items.Add(mSearchCity);
 
-            // Recent cities
+            // Recent cities (max 3)
+            int cityCount = 0;
             foreach (var c in _app.Config.RecentCities)
             {
+                if (cityCount >= 3) break;
                 AddCityItem(menu, c);
+                cityCount++;
             }
 
             menu.Items.Add(new Separator());
@@ -922,28 +924,28 @@ namespace RuWeatherWidget
                 if (isLight)
                 {
                     _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(220, 195, 222, 238));
-                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(50, 0, 0, 0));
+                    _hoverBorder.BorderBrush = Brushes.Transparent;
                 }
                 else
                 {
                     _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(235, 48, 48, 48));
-                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
+                    _hoverBorder.BorderBrush = Brushes.Transparent;
                 }
-                _hoverBorder.BorderThickness = new Thickness(1);
+                _hoverBorder.BorderThickness = new Thickness(0);
             }
             else
             {
                 if (isLight)
                 {
                     _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(180, 215, 235, 245));
-                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(25, 0, 0, 0));
-                    _hoverBorder.BorderThickness = new Thickness(1);
+                    _hoverBorder.BorderBrush = Brushes.Transparent;
+                    _hoverBorder.BorderThickness = new Thickness(0);
                 }
                 else
                 {
                     _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(200, 32, 32, 32));
-                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255));
-                    _hoverBorder.BorderThickness = new Thickness(1);
+                    _hoverBorder.BorderBrush = Brushes.Transparent;
+                    _hoverBorder.BorderThickness = new Thickness(0);
                 }
             }
             _hoverBorder.CornerRadius = new CornerRadius(6);
