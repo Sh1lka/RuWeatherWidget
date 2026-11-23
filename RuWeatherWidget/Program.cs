@@ -787,6 +787,9 @@ namespace RuWeatherWidget
         public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
 
         [DllImport("user32.dll")]
+        public static extern IntPtr FindWindowEx(IntPtr hWndParent, IntPtr hWndChildAfter, string lpszClass, string lpszWindow);
+
+        [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
@@ -822,6 +825,23 @@ namespace RuWeatherWidget
         [DllImport("user32.dll")]
         public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
 
+        [ComImport]
+        [Guid("56FDF342-43D4-11d6-9D06-00A0C90F2732")]
+        [ClassInterface(ClassInterfaceType.None)]
+        private class CTaskbarList { }
+
+        [ComImport]
+        [Guid("56FDF344-43D4-11d6-9D06-00A0C90F2732")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface ITaskbarList
+        {
+            void HrInit();
+            void AddTab(IntPtr hWnd);
+            void DeleteTab(IntPtr hWnd);
+            void ActivateTab(IntPtr hWnd);
+            void SetActiveAlt(IntPtr hWnd);
+        }
+
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         public const uint SWP_SHOWWINDOW = 0x0040;
         public const uint SWP_NOACTIVATE = 0x0010;
@@ -833,6 +853,8 @@ namespace RuWeatherWidget
         public const int WS_EX_TOOLWINDOW = 0x00000080;
         public const int WS_EX_NOACTIVATE = 0x08000000;
         public const int WS_EX_APPWINDOW = 0x00040000;
+
+        private IntPtr _lastOwnerTray = IntPtr.Zero;
 
         public TaskbarWidgetWindow(Program app)
         {
@@ -860,6 +882,21 @@ namespace RuWeatherWidget
                 exStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
                 exStyle &= ~WS_EX_APPWINDOW;
                 SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle);
+
+                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+                if (hTray != IntPtr.Zero)
+                {
+                    SetWindowLongPtr(helper.Handle, GWLP_HWNDPARENT, hTray);
+                    _lastOwnerTray = hTray;
+                }
+
+                try
+                {
+                    var tb = (ITaskbarList)new CTaskbarList();
+                    tb.HrInit();
+                    tb.DeleteTab(helper.Handle);
+                }
+                catch { }
 
                 UpdatePosition();
                 Program.Log("TaskbarWidgetWindow Loaded end");
@@ -1168,6 +1205,18 @@ namespace RuWeatherWidget
             }
 
             int targetLeft = 12;
+            int taskbarAl = GetTaskbarAlignment();
+            if (taskbarAl == 0 && hTray != IntPtr.Zero)
+            {
+                IntPtr hNotify = FindWindowEx(hTray, IntPtr.Zero, "TrayNotifyWnd", null);
+                if (hNotify != IntPtr.Zero)
+                {
+                    RECT nr;
+                    GetWindowRect(hNotify, out nr);
+                    targetLeft = (int)((nr.Left / dpiX) - Width - 12);
+                }
+            }
+
             int targetTop = trayTop + (trayHeight - (int)(Height * dpiY)) / 2;
 
             if (Double.IsNaN(Left) || Math.Abs(Left - targetLeft) > 1 || Double.IsNaN(Top) || Math.Abs(Top - (targetTop / dpiY)) > 1)
@@ -1179,8 +1228,38 @@ namespace RuWeatherWidget
             var helper = new System.Windows.Interop.WindowInteropHelper(this);
             if (helper.Handle != IntPtr.Zero)
             {
+                if (hTray != IntPtr.Zero && hTray != _lastOwnerTray)
+                {
+                    SetWindowLongPtr(helper.Handle, GWLP_HWNDPARENT, hTray);
+                    _lastOwnerTray = hTray;
+                    try
+                    {
+                        var tb = (ITaskbarList)new CTaskbarList();
+                        tb.HrInit();
+                        tb.DeleteTab(helper.Handle);
+                    }
+                    catch { }
+                }
+
                 SetWindowPos(helper.Handle, HWND_TOPMOST, (int)(targetLeft * dpiX), targetTop, (int)(Width * dpiX), (int)(Height * dpiY), SWP_SHOWWINDOW | SWP_NOACTIVATE);
             }
+        }
+
+        private static int GetTaskbarAlignment()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                {
+                    if (key != null)
+                    {
+                        var val = key.GetValue("TaskbarAl");
+                        if (val is int) return (int)val;
+                    }
+                }
+            }
+            catch { }
+            return 1;
         }
 
         public void RestoreTaskbar()
