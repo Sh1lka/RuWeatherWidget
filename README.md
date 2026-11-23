@@ -1,6 +1,6 @@
 # RuWeatherWidget v1
 
-> **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, выбором городов, временем восхода/заката и встроенным блокировщиком рекламы.
+> **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, выбором городов, временем восхода/заката и отсутствие рекламы.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows)](https://microsoft.com/windows)
 [![Framework](https://img.shields.io/badge/.NET-Framework%204.8%20%7C%20WPF-512BD4)](https://dotnet.microsoft.com/)
