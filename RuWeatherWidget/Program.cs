@@ -199,6 +199,15 @@ namespace RuWeatherWidget
 
     public class Program : Application
     {
+        [DllImport("user32.dll")]
+        private static extern IntPtr OpenWindowStation(string lpszWinSta, bool fInherit, uint dwDesiredAccess);
+        [DllImport("user32.dll")]
+        private static extern bool SetProcessWindowStation(IntPtr hWinSta);
+        [DllImport("user32.dll")]
+        private static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+        [DllImport("user32.dll")]
+        private static extern bool SetThreadDesktop(IntPtr hDesktop);
+
         public static void Log(string msg)
         {
             try
@@ -215,34 +224,58 @@ namespace RuWeatherWidget
         {
             try
             {
-                // Set browser emulation to IE11 mode for web controls
-                try
+                IntPtr hWinsta = OpenWindowStation("winsta0", false, 0x037F);
+                if (hWinsta != IntPtr.Zero) SetProcessWindowStation(hWinsta);
+                IntPtr hDesk = OpenDesktop("default", 0, false, 0x01FF);
+
+                var appThread = new Thread(() =>
                 {
-                    string exeName = System.IO.Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName);
-                    using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION"))
+                    try
                     {
-                        if (k != null) k.SetValue(exeName, 11001, RegistryValueKind.DWord);
+                        if (hDesk != IntPtr.Zero)
+                        {
+                            bool okDesk = SetThreadDesktop(hDesk);
+                            Log("appThread SetThreadDesktop=" + okDesk);
+                        }
+
+                        // Set browser emulation to IE11 mode for web controls
+                        try
+                        {
+                            string exeName = System.IO.Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName);
+                            using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION"))
+                            {
+                                if (k != null) k.SetValue(exeName, 11001, RegistryValueKind.DWord);
+                            }
+                        }
+                        catch { }
+
+                        Log("Application Main entry");
+                        bool createdNew;
+                        using (var mutex = new Mutex(true, "RuWeatherWidget_SingleInstance_Mutex", out createdNew))
+                        {
+                            Log("Mutex createdNew=" + createdNew);
+                            if (!createdNew) return;
+
+                            var app = new Program();
+                            app.DispatcherUnhandledException += (s, e) => {
+                                Log("Dispatcher Exception: " + e.Exception);
+                                e.Handled = true;
+                            };
+                            AppDomain.CurrentDomain.UnhandledException += (s, e) => {
+                                Log("AppDomain Exception: " + e.ExceptionObject);
+                            };
+                            app.Run();
+                        }
                     }
-                }
-                catch { }
+                    catch (Exception ex)
+                    {
+                        Log("appThread Exception: " + ex);
+                    }
+                });
 
-                Log("Application Main entry");
-                bool createdNew;
-                using (var mutex = new Mutex(true, "RuWeatherWidget_SingleInstance_Mutex", out createdNew))
-                {
-                    Log("Mutex createdNew=" + createdNew);
-                    if (!createdNew) return;
-
-                    var app = new Program();
-                    app.DispatcherUnhandledException += (s, e) => {
-                        Log("Dispatcher Exception: " + e.Exception);
-                        e.Handled = true;
-                    };
-                    AppDomain.CurrentDomain.UnhandledException += (s, e) => {
-                        Log("AppDomain Exception: " + e.ExceptionObject);
-                    };
-                    app.Run();
-                }
+                appThread.SetApartmentState(ApartmentState.STA);
+                appThread.Start();
+                appThread.Join();
             }
             catch (Exception ex)
             {
@@ -364,6 +397,7 @@ namespace RuWeatherWidget
 
         public void ToggleFlyout(int startPage = 0)
         {
+            Log("ToggleFlyout called: startPage=" + startPage + ", isVis=" + (_flyoutWindow != null && _flyoutWindow.IsVisible));
             if ((DateTime.UtcNow - _lastToggle).TotalMilliseconds < 250) return;
             _lastToggle = DateTime.UtcNow;
 
@@ -655,6 +689,20 @@ namespace RuWeatherWidget
         [DllImport("user32.dll")]
         public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+        private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
+        private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        private static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
+        {
+            if (IntPtr.Size == 8) return SetWindowLongPtr64(hWnd, nIndex, dwNewLong);
+            return new IntPtr(SetWindowLong32(hWnd, nIndex, dwNewLong.ToInt32()));
+        }
+
+        public const int GWLP_HWNDPARENT = -8;
+
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
@@ -664,20 +712,8 @@ namespace RuWeatherWidget
         [DllImport("gdi32.dll")]
         public static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int cx, int cy);
 
-        [DllImport("gdi32.dll")]
-        public static extern int CombineRgn(IntPtr hrgnDest, IntPtr hrgnSrc1, IntPtr hrgnSrc2, int fnCombineMode);
-
-        [DllImport("gdi32.dll")]
-        public static extern bool DeleteObject(IntPtr hObject);
-
         [DllImport("user32.dll")]
         public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
-
-        public const int RGN_DIFF = 4;
-        private IntPtr _appliedTrayHwnd = IntPtr.Zero;
-        private int _lastHoleLeft = -1;
-        private int _lastHoleTop = -1;
-        private int _holeRefreshCounter = 0;
 
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         public const uint SWP_SHOWWINDOW = 0x0040;
@@ -699,9 +735,9 @@ namespace RuWeatherWidget
             ShowInTaskbar = false;
             Topmost = true;
             ResizeMode = ResizeMode.NoResize;
-            Width = 168;
+            Width = 156;
             Height = 40;
-            Left = 10;
+            Left = 12;
             Top = SystemParameters.PrimaryScreenHeight - 44;
 
             RestoreTaskbar();
@@ -710,11 +746,19 @@ namespace RuWeatherWidget
             Loaded += delegate
             {
                 var helper = new System.Windows.Interop.WindowInteropHelper(this);
-                int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
-                SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+                Program.Log("TaskbarWidgetWindow Loaded begin: hwnd=" + helper.Handle);
+
+                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+                Program.Log("TaskbarWidgetWindow Loaded: hTray=" + hTray);
+                if (hTray != IntPtr.Zero)
+                {
+                    IntPtr prev = SetWindowLongPtr(helper.Handle, GWLP_HWNDPARENT, hTray);
+                    Program.Log("SetWindowLongPtr GWLP_HWNDPARENT prev=" + prev);
+                }
 
                 RestoreTaskbar();
                 UpdatePosition();
+                Program.Log("TaskbarWidgetWindow Loaded end");
             };
 
             _posTimer = new DispatcherTimer();
@@ -732,17 +776,17 @@ namespace RuWeatherWidget
 
             _hoverBorder = new Border();
             _hoverBorder.Margin = new Thickness(0);
-            _hoverBorder.Padding = new Thickness(8, 2, 8, 2);
+            _hoverBorder.Padding = new Thickness(6, 2, 8, 2);
             _hoverBorder.Cursor = Cursors.Hand;
-            _hoverBorder.CornerRadius = new CornerRadius(6);
+            _hoverBorder.CornerRadius = new CornerRadius(5);
 
             var stack = new StackPanel();
             stack.Orientation = Orientation.Horizontal;
             stack.VerticalAlignment = VerticalAlignment.Center;
 
             _iconCanvas = new Canvas();
-            _iconCanvas.Width = 28;
-            _iconCanvas.Height = 28;
+            _iconCanvas.Width = 24;
+            _iconCanvas.Height = 24;
             _iconCanvas.VerticalAlignment = VerticalAlignment.Center;
             stack.Children.Add(_iconCanvas);
 
@@ -919,52 +963,42 @@ namespace RuWeatherWidget
             bool isLight = ThemeManager.IsTaskbarLight();
             _currentIsLight = isLight;
 
+            _hoverBorder.BorderThickness = new Thickness(0);
+            _hoverBorder.BorderBrush = Brushes.Transparent;
+            _hoverBorder.CornerRadius = new CornerRadius(5);
+            _hoverBorder.Effect = null;
+
             if (_isHovered)
             {
                 if (isLight)
                 {
-                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(220, 195, 222, 238));
-                    _hoverBorder.BorderBrush = Brushes.Transparent;
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(20, 0, 0, 0));
                 }
                 else
                 {
-                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(235, 48, 48, 48));
-                    _hoverBorder.BorderBrush = Brushes.Transparent;
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(25, 255, 255, 255));
                 }
-                _hoverBorder.BorderThickness = new Thickness(0);
             }
             else
             {
-                if (isLight)
-                {
-                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(180, 215, 235, 245));
-                    _hoverBorder.BorderBrush = Brushes.Transparent;
-                    _hoverBorder.BorderThickness = new Thickness(0);
-                }
-                else
-                {
-                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(200, 32, 32, 32));
-                    _hoverBorder.BorderBrush = Brushes.Transparent;
-                    _hoverBorder.BorderThickness = new Thickness(0);
-                }
+                _hoverBorder.Background = Brushes.Transparent;
             }
-            _hoverBorder.CornerRadius = new CornerRadius(6);
-            _hoverBorder.Effect = null;
 
             if (isLight)
             {
                 _txtTemp.Foreground = new SolidColorBrush(Color.FromRgb(24, 24, 24));
-                _txtCond.Foreground = new SolidColorBrush(Color.FromRgb(70, 70, 70));
+                _txtCond.Foreground = new SolidColorBrush(Color.FromRgb(80, 80, 80));
             }
             else
             {
                 _txtTemp.Foreground = Brushes.White;
-                _txtCond.Foreground = new SolidColorBrush(Color.FromRgb(215, 215, 215));
+                _txtCond.Foreground = new SolidColorBrush(Color.FromArgb(215, 255, 255, 255));
             }
 
-            if (_lastWeatherData != null && _iconCanvas != null)
+            if (_iconCanvas != null)
             {
-                WeatherIcons.DrawIcon(_iconCanvas, _lastWeatherData.IconType, 28, isLight);
+                string icon = _lastWeatherData != null ? _lastWeatherData.IconType : "partly_cloudy";
+                WeatherIcons.DrawIcon(_iconCanvas, icon, 24, isLight);
             }
         }
 
@@ -1001,7 +1035,7 @@ namespace RuWeatherWidget
                 dpiY = source.CompositionTarget.TransformToDevice.M22;
             }
 
-            int targetLeft = 10;
+            int targetLeft = 12;
             int targetTop = trayTop + (trayHeight - (int)(Height * dpiY)) / 2;
 
             if (Double.IsNaN(Left) || Math.Abs(Left - targetLeft) > 1 || Double.IsNaN(Top) || Math.Abs(Top - (targetTop / dpiY)) > 1)
@@ -1015,70 +1049,16 @@ namespace RuWeatherWidget
             {
                 SetWindowPos(helper.Handle, HWND_TOPMOST, (int)(targetLeft * dpiX), targetTop, (int)(Width * dpiX), (int)(Height * dpiY), SWP_SHOWWINDOW | SWP_NOACTIVATE);
             }
-
-            _holeRefreshCounter++;
-            if (_holeRefreshCounter % 10 == 1 || _appliedTrayHwnd == IntPtr.Zero)
-            {
-                UpdateTaskbarHole(dpiX, dpiY);
-            }
-        }
-
-        public void UpdateTaskbarHole(double dpiX = 1.0, double dpiY = 1.0)
-        {
-            try
-            {
-                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-                if (hTray == IntPtr.Zero) return;
-
-                RECT r;
-                GetWindowRect(hTray, out r);
-                int w = r.Right - r.Left;
-                int h = r.Bottom - r.Top;
-
-                int holeLeft = (int)(10 * dpiX);
-                int holeTop = (h - (int)(Height * dpiY)) / 2;
-                int holeRight = holeLeft + (int)(Width * dpiX);
-                int holeBottom = holeTop + (int)(Height * dpiY);
-                int radius = (int)(12 * dpiX);
-
-                if (_appliedTrayHwnd == hTray && _lastHoleLeft == holeLeft && _lastHoleTop == holeTop && (_holeRefreshCounter % 20 != 1))
-                    return;
-
-                IntPtr rgnFull = CreateRectRgn(0, 0, w, h);
-                IntPtr rgnHole = CreateRoundRectRgn(holeLeft, holeTop, holeRight, holeBottom, radius, radius);
-                IntPtr rgnResult = CreateRectRgn(0, 0, 0, 0);
-
-                CombineRgn(rgnResult, rgnFull, rgnHole, RGN_DIFF);
-                SetWindowRgn(hTray, rgnResult, true);
-
-                DeleteObject(rgnFull);
-                DeleteObject(rgnHole);
-
-                _appliedTrayHwnd = hTray;
-                _lastHoleLeft = holeLeft;
-                _lastHoleTop = holeTop;
-            }
-            catch { }
         }
 
         public void RestoreTaskbar()
         {
             try
             {
-                if (_appliedTrayHwnd != IntPtr.Zero)
+                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+                if (hTray != IntPtr.Zero)
                 {
-                    SetWindowRgn(_appliedTrayHwnd, IntPtr.Zero, true);
-                    _appliedTrayHwnd = IntPtr.Zero;
-                    _lastHoleLeft = -1;
-                    _lastHoleTop = -1;
-                }
-                else
-                {
-                    IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-                    if (hTray != IntPtr.Zero)
-                    {
-                        SetWindowRgn(hTray, IntPtr.Zero, true);
-                    }
+                    SetWindowRgn(hTray, IntPtr.Zero, true);
                 }
             }
             catch { }
@@ -1184,12 +1164,13 @@ namespace RuWeatherWidget
             {
                 if ((DateTime.UtcNow - LastOpenTime).TotalMilliseconds > 350)
                 {
+                    uint fgPid = 0;
+                    IntPtr fg = IntPtr.Zero;
                     try
                     {
-                        IntPtr fg = GetForegroundWindow();
+                        fg = GetForegroundWindow();
                         if (fg != IntPtr.Zero)
                         {
-                            uint fgPid;
                             GetWindowThreadProcessId(fg, out fgPid);
                             uint myPid = (uint)Process.GetCurrentProcess().Id;
                             if (fgPid == myPid)
@@ -1199,6 +1180,7 @@ namespace RuWeatherWidget
                         }
                     }
                     catch { }
+                    Program.Log(string.Format("Flyout Deactivated: hiding. fg={0}, fgPid={1}", fg, fgPid));
                     Hide();
                 }
             };
