@@ -1867,15 +1867,22 @@ namespace RuWeatherWidget
                     FontSize = 11,
                     Foreground = isLight ? new SolidColorBrush(Color.FromRgb(100, 100, 100)) : new SolidColorBrush(Color.FromRgb(180, 180, 180)),
                     VerticalAlignment = VerticalAlignment.Center,
-                    TextTrimming = TextTrimming.CharacterEllipsis
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    Margin = new Thickness(8, 0, 8, 0)
                 };
                 var dTemp = new TextBlock() {
                     Text = dp.TempMinMax,
                     FontSize = 12,
                     FontWeight = FontWeights.SemiBold,
                     Foreground = isLight ? new SolidColorBrush(Color.FromRgb(24, 24, 24)) : Brushes.White,
-                    VerticalAlignment = VerticalAlignment.Center
+                    VerticalAlignment = VerticalAlignment.Center,
+                    HorizontalAlignment = HorizontalAlignment.Right
                 };
+
+                Grid.SetColumn(dDay, 0);
+                Grid.SetColumn(dIcon, 1);
+                Grid.SetColumn(dCond, 2);
+                Grid.SetColumn(dTemp, 3);
 
                 dg.Children.Add(dDay);
                 dg.Children.Add(dIcon);
