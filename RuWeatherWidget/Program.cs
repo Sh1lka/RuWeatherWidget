@@ -207,6 +207,135 @@ namespace RuWeatherWidget
         private static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
         [DllImport("user32.dll")]
         private static extern bool SetThreadDesktop(IntPtr hDesktop);
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+
+        public static void DisableNativeWindowsWidgets()
+        {
+            try
+            {
+                int taskbarDa = 1;
+                try
+                {
+                    using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                    {
+                        if (key != null)
+                        {
+                            object val = key.GetValue("TaskbarDa");
+                            if (val is int) taskbarDa = (int)val;
+                        }
+                    }
+                }
+                catch { }
+
+                if (taskbarDa != 0)
+                {
+                    Log("TaskbarDa=" + taskbarDa + ", applying native widget suppression...");
+                    using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                    {
+                        if (key != null) key.SetValue("TaskbarDa", 0, RegistryValueKind.DWord);
+                    }
+                    using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Dsh"))
+                    {
+                        if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
+                    }
+                    using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Windows\Widgets"))
+                    {
+                        if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
+                    }
+
+                    try
+                    {
+                        using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Dsh"))
+                        {
+                            if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
+                        }
+                    }
+                    catch { }
+                    try
+                    {
+                        using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Windows\Widgets"))
+                        {
+                            if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
+                        }
+                    }
+                    catch { }
+
+                    string[] procs = new string[] { "Widgets", "WidgetService", "WindowsWidgets", "NewsAndInterests" };
+                    foreach (var pName in procs)
+                    {
+                        try
+                        {
+                            foreach (var p in Process.GetProcessesByName(pName))
+                            {
+                                try { p.Kill(); } catch { }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    UIntPtr dummy;
+                    SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, "TraySettings", 0x0002, 1000, out dummy);
+                    SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", 0x0002, 1000, out dummy);
+                    SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, "Policy", 0x0002, 1000, out dummy);
+                    Log("DisableNativeWindowsWidgets finished.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("DisableNativeWindowsWidgets Exception: " + ex);
+            }
+        }
+
+        public static void ForceDisableNativeWidgetsAndRestartExplorer()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                {
+                    if (key != null) key.SetValue("TaskbarDa", 0, RegistryValueKind.DWord);
+                }
+                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Dsh"))
+                {
+                    if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
+                }
+                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Windows\Widgets"))
+                {
+                    if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
+                }
+                try
+                {
+                    using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Dsh"))
+                    {
+                        if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
+                    }
+                }
+                catch { }
+                try
+                {
+                    using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Windows\Widgets"))
+                    {
+                        if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
+                    }
+                }
+                catch { }
+
+                string[] procs = new string[] { "Widgets", "WidgetService", "WindowsWidgets", "NewsAndInterests" };
+                foreach (var pName in procs)
+                {
+                    try { foreach (var p in Process.GetProcessesByName(pName)) { try { p.Kill(); } catch { } } } catch { }
+                }
+
+                UIntPtr dummy;
+                SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, "TraySettings", 0x0002, 1000, out dummy);
+
+                foreach (var exp in Process.GetProcessesByName("explorer"))
+                {
+                    try { exp.Kill(); } catch { }
+                }
+            }
+            catch { }
+        }
 
         public static void Log(string msg)
         {
@@ -255,6 +384,8 @@ namespace RuWeatherWidget
                         {
                             Log("Mutex createdNew=" + createdNew);
                             if (!createdNew) return;
+
+                            DisableNativeWindowsWidgets();
 
                             var app = new Program();
                             app.DispatcherUnhandledException += (s, e) => {
@@ -756,6 +887,7 @@ namespace RuWeatherWidget
                     Program.Log("SetWindowLongPtr GWLP_HWNDPARENT prev=" + prev);
                 }
 
+                Program.DisableNativeWindowsWidgets();
                 RestoreTaskbar();
                 UpdatePosition();
                 Program.Log("TaskbarWidgetWindow Loaded end");
@@ -914,6 +1046,22 @@ namespace RuWeatherWidget
                 _app.SaveConfig();
             };
             menu.Items.Add(mAuto);
+
+            var mDisableNative = new MenuItem();
+            mDisableNative.Header = "⚙️  Скрыть штатный виджет Windows";
+            mDisableNative.Click += delegate
+            {
+                var res = MessageBox.Show(
+                    "Отключить встроенный виджет Windows 11 и перезапустить Проводник?\r\n\r\nЭто устранит наложение и освободит место на панели задач.",
+                    "Скрыть штатный виджет Windows",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+                if (res == MessageBoxResult.Yes)
+                {
+                    Program.ForceDisableNativeWidgetsAndRestartExplorer();
+                }
+            };
+            menu.Items.Add(mDisableNative);
 
             menu.Items.Add(new Separator());
 
