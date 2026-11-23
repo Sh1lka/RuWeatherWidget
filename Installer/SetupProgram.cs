@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -78,6 +79,20 @@ namespace RuWeatherInstaller
                 {
                     SetWindowRgn(hTray, IntPtr.Zero, true);
                 }
+
+                // 2.1 Restore default Windows 11 widgets button if previously disabled
+                try
+                {
+                    using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                    {
+                        if (key != null) key.SetValue("TaskbarDa", 1, RegistryValueKind.DWord);
+                    }
+                    Registry.CurrentUser.DeleteSubKeyTree(@"Software\Policies\Microsoft\Dsh", false);
+                    Registry.CurrentUser.DeleteSubKeyTree(@"Software\Policies\Microsoft\Windows\Widgets", false);
+                    UIntPtr dummy;
+                    SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, "TraySettings", 0x0002, 1000, out dummy);
+                }
+                catch { }
 
                 // 3. Remove autostart
                 using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
@@ -213,17 +228,8 @@ namespace RuWeatherInstaller
             // 6. Disable default Windows 11 widgets button if requested
             if (disableDefault)
             {
-                try
-                {
-                    using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", true))
-                    {
-                        if (key != null)
-                        {
-                            key.SetValue("TaskbarDa", 0, RegistryValueKind.DWord);
-                        }
-                    }
-                }
-                catch { }
+                if (progress != null) progress("Отключение штатного виджета Windows...", 0.8);
+                DisableWindows11Widgets(true);
             }
 
             // 7. Create Start Menu Shortcut
@@ -255,7 +261,7 @@ namespace RuWeatherInstaller
                     if (key != null)
                     {
                         key.SetValue("DisplayName", "Виджет погоды (Русский для Windows 11)");
-                        key.SetValue("DisplayVersion", "1.1.0");
+                        key.SetValue("DisplayVersion", "1.1.1");
                         key.SetValue("Publisher", "Antigravity");
                         key.SetValue("DisplayIcon", targetExe + ",0");
                         key.SetValue("InstallLocation", targetDir);
@@ -290,6 +296,88 @@ namespace RuWeatherInstaller
         public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
         [DllImport("user32.dll")]
         public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+
+        public static void DisableWindows11Widgets(bool restartExplorer)
+        {
+            try
+            {
+                // 1. User preferences (Advanced\TaskbarDa = 0)
+                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                {
+                    if (key != null) key.SetValue("TaskbarDa", 0, RegistryValueKind.DWord);
+                }
+
+                // 2. Group Policy (HKCU)
+                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Dsh"))
+                {
+                    if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
+                }
+                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Windows\Widgets"))
+                {
+                    if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
+                }
+
+                // 3. Group Policy (HKLM, if elevated)
+                try
+                {
+                    using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Dsh"))
+                    {
+                        if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
+                    }
+                }
+                catch { }
+                try
+                {
+                    using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Windows\Widgets"))
+                    {
+                        if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
+                    }
+                }
+                catch { }
+
+                // 4. Terminate background Widgets processes
+                string[] widgetProcs = new string[] { "Widgets", "WidgetService", "WindowsWidgets", "NewsAndInterests" };
+                foreach (var procName in widgetProcs)
+                {
+                    try
+                    {
+                        foreach (var p in Process.GetProcessesByName(procName))
+                        {
+                            try { p.Kill(); } catch { }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 5. Broadcast WM_SETTINGCHANGE to all windows including Explorer
+                UIntPtr dummy;
+                SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, "TraySettings", 0x0002, 1000, out dummy);
+                SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", 0x0002, 1000, out dummy);
+                SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, "Policy", 0x0002, 1000, out dummy);
+
+                // 6. Restart explorer.exe if requested so taskbar layout immediately reloads without the widget
+                if (restartExplorer)
+                {
+                    try
+                    {
+                        foreach (var exp in Process.GetProcessesByName("explorer"))
+                        {
+                            try { exp.Kill(); } catch { }
+                        }
+                        Thread.Sleep(800);
+                        if (Process.GetProcessesByName("explorer").Length == 0)
+                        {
+                            Process.Start("explorer.exe");
+                        }
+                        Thread.Sleep(1200);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
     }
 
     public class InstallerWindow : Window
