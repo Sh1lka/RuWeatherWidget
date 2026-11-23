@@ -17,6 +17,17 @@ namespace RuWeatherInstaller
 {
     public class SetupProgram : Application
     {
+        public static bool IsAdmin()
+        {
+            try
+            {
+                var id = System.Security.Principal.WindowsIdentity.GetCurrent();
+                var p = new System.Security.Principal.WindowsPrincipal(id);
+                return p.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+            }
+            catch { return false; }
+        }
+
         [STAThread]
         public static void Main(string[] args)
         {
@@ -28,6 +39,23 @@ namespace RuWeatherInstaller
                 string a = arg.ToLower().TrimStart('-', '/');
                 if (a == "uninstall" || a == "u") isUninstall = true;
                 if (a == "silent" || a == "s" || a == "q") isSilent = true;
+            }
+
+            if (!IsAdmin() && !isUninstall)
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo()
+                    {
+                        FileName = Process.GetCurrentProcess().MainModule.FileName,
+                        Arguments = string.Join(" ", args),
+                        Verb = "runas",
+                        UseShellExecute = true
+                    };
+                    Process.Start(psi);
+                    return;
+                }
+                catch { }
             }
 
             if (isUninstall)
@@ -232,6 +260,29 @@ namespace RuWeatherInstaller
                 DisableWindows11Widgets(true);
             }
 
+            // 6.1 Create helper batch script for manual widget disabling if needed
+            try
+            {
+                string batPath = System.IO.Path.Combine(targetDir, "Disable_Windows_Widgets.bat");
+                string batContent = "@echo off\r\n" +
+                    "chcp 65001 >nul\r\n" +
+                    "echo ========================================================\r\n" +
+                    "echo  Отключение штатного виджета Windows 11\r\n" +
+                    "echo ========================================================\r\n" +
+                    "reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Dsh\" /v \"AllowNewsAndInterests\" /t REG_DWORD /d 0 /f\r\n" +
+                    "reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Widgets\" /v \"AllowWidgets\" /t REG_DWORD /d 0 /f\r\n" +
+                    "reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v \"TaskbarDa\" /t REG_DWORD /d 0 /f\r\n" +
+                    "taskkill /f /im Widgets.exe >nul 2>&1\r\n" +
+                    "taskkill /f /im WidgetService.exe >nul 2>&1\r\n" +
+                    "taskkill /f /im explorer.exe >nul 2>&1\r\n" +
+                    "start explorer.exe\r\n" +
+                    "echo.\r\n" +
+                    "echo Готово! Штатный виджет Windows 11 отключен.\r\n" +
+                    "timeout /t 3 >nul\r\n";
+                File.WriteAllText(batPath, batContent, Encoding.UTF8);
+            }
+            catch { }
+
             // 7. Create Start Menu Shortcut
             if (createShortcut)
             {
@@ -303,13 +354,48 @@ namespace RuWeatherInstaller
         {
             try
             {
-                // 1. User preferences (Advanced\TaskbarDa = 0)
+                // If not running as admin, invoke elevated cmd to ensure HKLM policy is written
+                if (!IsAdmin())
+                {
+                    try
+                    {
+                        string cmdArgs = "/c reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Dsh\" /v \"AllowNewsAndInterests\" /t REG_DWORD /d 0 /f >nul 2>&1 & reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Widgets\" /v \"AllowWidgets\" /t REG_DWORD /d 0 /f >nul 2>&1 & reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v \"TaskbarDa\" /t REG_DWORD /d 0 /f >nul 2>&1 & taskkill /f /im Widgets.exe >nul 2>&1 & taskkill /f /im WidgetService.exe >nul 2>&1";
+                        if (restartExplorer)
+                        {
+                            cmdArgs += " & taskkill /f /im explorer.exe >nul 2>&1 & start explorer.exe";
+                        }
+                        var psi = new ProcessStartInfo()
+                        {
+                            FileName = "cmd.exe",
+                            Arguments = cmdArgs,
+                            Verb = "runas",
+                            UseShellExecute = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        };
+                        var p = Process.Start(psi);
+                        if (p != null) p.WaitForExit(6000);
+                        return;
+                    }
+                    catch { }
+                }
+
+                // 1. Group Policy (HKLM)
+                using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Dsh"))
+                {
+                    if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
+                }
+                using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Windows\Widgets"))
+                {
+                    if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
+                }
+
+                // 2. User preferences (Advanced\TaskbarDa = 0)
                 using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
                 {
                     if (key != null) key.SetValue("TaskbarDa", 0, RegistryValueKind.DWord);
                 }
 
-                // 2. Group Policy (HKCU)
+                // 3. Group Policy (HKCU)
                 using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Dsh"))
                 {
                     if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
@@ -318,24 +404,6 @@ namespace RuWeatherInstaller
                 {
                     if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
                 }
-
-                // 3. Group Policy (HKLM, if elevated)
-                try
-                {
-                    using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Dsh"))
-                    {
-                        if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
-                    }
-                }
-                catch { }
-                try
-                {
-                    using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Windows\Widgets"))
-                    {
-                        if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
-                    }
-                }
-                catch { }
 
                 // 4. Terminate background Widgets processes
                 string[] widgetProcs = new string[] { "Widgets", "WidgetService", "WindowsWidgets", "NewsAndInterests" };
