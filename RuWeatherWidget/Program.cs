@@ -1168,6 +1168,16 @@ namespace RuWeatherWidget
             Width = 370;
             Height = 530;
 
+            try
+            {
+                string icoPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
+                if (File.Exists(icoPath))
+                {
+                    Icon = System.Windows.Media.Imaging.BitmapFrame.Create(new Uri(icoPath));
+                }
+            }
+            catch { }
+
             BuildUI();
 
             Deactivated += delegate
