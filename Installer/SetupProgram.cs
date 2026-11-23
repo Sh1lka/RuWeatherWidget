@@ -153,7 +153,8 @@ namespace RuWeatherInstaller
                 "RuWeatherWidget.exe",
                 "Microsoft.Web.WebView2.Wpf.dll",
                 "Microsoft.Web.WebView2.Core.dll",
-                "WebView2Loader.dll"
+                "WebView2Loader.dll",
+                "app.ico"
             };
 
             foreach (var fName in embedFiles)
@@ -313,6 +314,19 @@ namespace RuWeatherInstaller
             Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
             Foreground = Brushes.White;
             FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
+
+            try
+            {
+                var asm = Assembly.GetExecutingAssembly();
+                using (var s = asm.GetManifestResourceStream("app.ico"))
+                {
+                    if (s != null)
+                    {
+                        Icon = System.Windows.Media.Imaging.BitmapFrame.Create(s);
+                    }
+                }
+            }
+            catch { }
 
             BuildUI();
         }
@@ -577,7 +591,29 @@ namespace RuWeatherInstaller
 
         private void DrawHeaderIcon(Canvas canvas)
         {
-            // Sun
+            try
+            {
+                var asm = Assembly.GetExecutingAssembly();
+                using (var s = asm.GetManifestResourceStream("app.ico"))
+                {
+                    if (s != null)
+                    {
+                        var decoder = new System.Windows.Media.Imaging.IconBitmapDecoder(s, System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat, System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+                        if (decoder.Frames.Count > 0)
+                        {
+                            var img = new Image();
+                            img.Source = decoder.Frames[0];
+                            img.Width = 48;
+                            img.Height = 48;
+                            canvas.Children.Add(img);
+                            return;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // Fallback Sun
             var sun = new Ellipse();
             sun.Width = 24;
             sun.Height = 24;
