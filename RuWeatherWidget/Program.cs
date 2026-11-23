@@ -654,8 +654,26 @@ namespace RuWeatherWidget
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateRectRgn(int nLeftRect, int nTopRect, int nRightRect, int nBottomRect);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int cx, int cy);
+
+        [DllImport("gdi32.dll")]
+        public static extern int CombineRgn(IntPtr hrgnDest, IntPtr hrgnSrc1, IntPtr hrgnSrc2, int fnCombineMode);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteObject(IntPtr hObject);
+
         [DllImport("user32.dll")]
         public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+
+        public const int RGN_DIFF = 4;
+        private IntPtr _appliedTrayHwnd = IntPtr.Zero;
+        private int _lastHoleLeft = -1;
+        private int _lastHoleTop = -1;
+        private int _holeRefreshCounter = 0;
 
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         public const uint SWP_SHOWWINDOW = 0x0040;
@@ -903,22 +921,30 @@ namespace RuWeatherWidget
             {
                 if (isLight)
                 {
-                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(24, 0, 0, 0));
-                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(32, 0, 0, 0));
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(220, 195, 222, 238));
+                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(50, 0, 0, 0));
                 }
                 else
                 {
-                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(32, 255, 255, 255));
-                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(235, 48, 48, 48));
+                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(70, 255, 255, 255));
                 }
                 _hoverBorder.BorderThickness = new Thickness(1);
             }
             else
             {
-                // 100% transparent in idle state so the native Windows 11 taskbar theme/acrylic shines through!
-                _hoverBorder.Background = Brushes.Transparent;
-                _hoverBorder.BorderBrush = Brushes.Transparent;
-                _hoverBorder.BorderThickness = new Thickness(0);
+                if (isLight)
+                {
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(180, 215, 235, 245));
+                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(25, 0, 0, 0));
+                    _hoverBorder.BorderThickness = new Thickness(1);
+                }
+                else
+                {
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(200, 32, 32, 32));
+                    _hoverBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255));
+                    _hoverBorder.BorderThickness = new Thickness(1);
+                }
             }
             _hoverBorder.CornerRadius = new CornerRadius(6);
             _hoverBorder.Effect = null;
@@ -926,7 +952,7 @@ namespace RuWeatherWidget
             if (isLight)
             {
                 _txtTemp.Foreground = new SolidColorBrush(Color.FromRgb(24, 24, 24));
-                _txtCond.Foreground = new SolidColorBrush(Color.FromRgb(75, 75, 75));
+                _txtCond.Foreground = new SolidColorBrush(Color.FromRgb(70, 70, 70));
             }
             else
             {
@@ -987,16 +1013,70 @@ namespace RuWeatherWidget
             {
                 SetWindowPos(helper.Handle, HWND_TOPMOST, (int)(targetLeft * dpiX), targetTop, (int)(Width * dpiX), (int)(Height * dpiY), SWP_SHOWWINDOW | SWP_NOACTIVATE);
             }
+
+            _holeRefreshCounter++;
+            if (_holeRefreshCounter % 10 == 1 || _appliedTrayHwnd == IntPtr.Zero)
+            {
+                UpdateTaskbarHole(dpiX, dpiY);
+            }
+        }
+
+        public void UpdateTaskbarHole(double dpiX = 1.0, double dpiY = 1.0)
+        {
+            try
+            {
+                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+                if (hTray == IntPtr.Zero) return;
+
+                RECT r;
+                GetWindowRect(hTray, out r);
+                int w = r.Right - r.Left;
+                int h = r.Bottom - r.Top;
+
+                int holeLeft = (int)(10 * dpiX);
+                int holeTop = (h - (int)(Height * dpiY)) / 2;
+                int holeRight = holeLeft + (int)(Width * dpiX);
+                int holeBottom = holeTop + (int)(Height * dpiY);
+                int radius = (int)(12 * dpiX);
+
+                if (_appliedTrayHwnd == hTray && _lastHoleLeft == holeLeft && _lastHoleTop == holeTop && (_holeRefreshCounter % 20 != 1))
+                    return;
+
+                IntPtr rgnFull = CreateRectRgn(0, 0, w, h);
+                IntPtr rgnHole = CreateRoundRectRgn(holeLeft, holeTop, holeRight, holeBottom, radius, radius);
+                IntPtr rgnResult = CreateRectRgn(0, 0, 0, 0);
+
+                CombineRgn(rgnResult, rgnFull, rgnHole, RGN_DIFF);
+                SetWindowRgn(hTray, rgnResult, true);
+
+                DeleteObject(rgnFull);
+                DeleteObject(rgnHole);
+
+                _appliedTrayHwnd = hTray;
+                _lastHoleLeft = holeLeft;
+                _lastHoleTop = holeTop;
+            }
+            catch { }
         }
 
         public void RestoreTaskbar()
         {
             try
             {
-                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-                if (hTray != IntPtr.Zero)
+                if (_appliedTrayHwnd != IntPtr.Zero)
                 {
-                    SetWindowRgn(hTray, IntPtr.Zero, true);
+                    SetWindowRgn(_appliedTrayHwnd, IntPtr.Zero, true);
+                    _appliedTrayHwnd = IntPtr.Zero;
+                    _lastHoleLeft = -1;
+                    _lastHoleTop = -1;
+                }
+                else
+                {
+                    IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+                    if (hTray != IntPtr.Zero)
+                    {
+                        SetWindowRgn(hTray, IntPtr.Zero, true);
+                    }
                 }
             }
             catch { }
