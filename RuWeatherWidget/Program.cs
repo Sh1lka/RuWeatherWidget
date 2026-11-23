@@ -1666,6 +1666,14 @@ namespace RuWeatherWidget
                         _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
                         _webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
 
+                        _webView.CoreWebView2.PermissionRequested += (sender, args) =>
+                        {
+                            if (args.PermissionKind == Microsoft.Web.WebView2.Core.CoreWebView2PermissionKind.Geolocation)
+                            {
+                                args.State = Microsoft.Web.WebView2.Core.CoreWebView2PermissionState.Allow;
+                            }
+                        };
+
                         // Block advert domains
                         try
                         {
@@ -1693,6 +1701,73 @@ namespace RuWeatherWidget
                         {
                             string adBlockScript = @"
 (function() {
+    window.__widgetLat = " + _app.Config.Lat.ToString("F4", CultureInfo.InvariantCulture) + @";
+    window.__widgetLon = " + _app.Config.Lon.ToString("F4", CultureInfo.InvariantCulture) + @";
+
+    function getFallbackPos() {
+        var lt = window.__widgetLat || " + _app.Config.Lat.ToString("F4", CultureInfo.InvariantCulture) + @";
+        var ln = window.__widgetLon || " + _app.Config.Lon.ToString("F4", CultureInfo.InvariantCulture) + @";
+        return {
+            coords: {
+                latitude: lt,
+                longitude: ln,
+                accuracy: 30,
+                altitude: null,
+                altitudeAccuracy: null,
+                heading: null,
+                speed: null
+            },
+            timestamp: Date.now()
+        };
+    }
+
+    if (navigator.geolocation) {
+        var origGet = navigator.geolocation.getCurrentPosition ? navigator.geolocation.getCurrentPosition.bind(navigator.geolocation) : null;
+        navigator.geolocation.getCurrentPosition = function(success, error, options) {
+            var done = false;
+            var timer = setTimeout(function() {
+                if (!done) {
+                    done = true;
+                    if (success) success(getFallbackPos());
+                }
+            }, 1200);
+
+            if (origGet) {
+                try {
+                    origGet(function(pos) {
+                        if (!done) {
+                            done = true;
+                            clearTimeout(timer);
+                            if (success) success(pos);
+                        }
+                    }, function(err) {
+                        if (!done) {
+                            done = true;
+                            clearTimeout(timer);
+                            if (success) success(getFallbackPos());
+                        }
+                    }, { timeout: 1100, enableHighAccuracy: true });
+                } catch(e) {
+                    if (!done) {
+                        done = true;
+                        clearTimeout(timer);
+                        if (success) success(getFallbackPos());
+                    }
+                }
+            } else {
+                done = true;
+                clearTimeout(timer);
+                if (success) success(getFallbackPos());
+            }
+        };
+
+        navigator.geolocation.watchPosition = function(success, error, options) {
+            if (success) success(getFallbackPos());
+            return 1;
+        };
+        navigator.geolocation.clearWatch = function(id) {};
+    }
+
     var css = '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""advert""],[class*=""Advert""],[class*=""Banner""],[class*=""banner""],[class*=""yandex_rtb""],[id*=""yandex_rtb""],[class*=""yap-R-""],[class*=""yap-layout""],iframe[src*=""an.yandex.ru""],iframe[src*=""yabs.yandex.ru""] { display: none !important; height: 0 !important; min-height: 0 !important; max-height: 0 !important; padding: 0 !important; margin: 0 !important; opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }';
     
     function injectStyle() {
@@ -1739,6 +1814,17 @@ namespace RuWeatherWidget
                         };
                         _isWebViewInitialized = true;
                     }
+
+                    try
+                    {
+                        if (_webView.CoreWebView2 != null)
+                        {
+                            await _webView.CoreWebView2.ExecuteScriptAsync(string.Format(CultureInfo.InvariantCulture,
+                                "window.__widgetLat = {0:F4}; window.__widgetLon = {1:F4};",
+                                _app.Config.Lat, _app.Config.Lon));
+                        }
+                    }
+                    catch { }
 
                     if (_lastRadarUrl != url)
                     {
