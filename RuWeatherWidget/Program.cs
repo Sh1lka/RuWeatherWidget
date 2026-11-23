@@ -831,6 +831,8 @@ namespace RuWeatherWidget
 
         public const int GWL_EXSTYLE = -20;
         public const int WS_EX_TOOLWINDOW = 0x00000080;
+        public const int WS_EX_NOACTIVATE = 0x08000000;
+        public const int WS_EX_APPWINDOW = 0x00040000;
 
         public TaskbarWidgetWindow(Program app)
         {
@@ -847,7 +849,6 @@ namespace RuWeatherWidget
             Left = 12;
             Top = SystemParameters.PrimaryScreenHeight - 44;
 
-            RestoreTaskbar();
             BuildUI();
 
             Loaded += delegate
@@ -855,16 +856,11 @@ namespace RuWeatherWidget
                 var helper = new System.Windows.Interop.WindowInteropHelper(this);
                 Program.Log("TaskbarWidgetWindow Loaded begin: hwnd=" + helper.Handle);
 
-                IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-                Program.Log("TaskbarWidgetWindow Loaded: hTray=" + hTray);
-                if (hTray != IntPtr.Zero)
-                {
-                    IntPtr prev = SetWindowLongPtr(helper.Handle, GWLP_HWNDPARENT, hTray);
-                    Program.Log("SetWindowLongPtr GWLP_HWNDPARENT prev=" + prev);
-                }
+                int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
+                exStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                exStyle &= ~WS_EX_APPWINDOW;
+                SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle);
 
-                Program.DisableNativeWindowsWidgets();
-                RestoreTaskbar();
                 UpdatePosition();
                 Program.Log("TaskbarWidgetWindow Loaded end");
             };
