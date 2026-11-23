@@ -291,50 +291,26 @@ namespace RuWeatherWidget
         {
             try
             {
-                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                var psi = new ProcessStartInfo()
                 {
-                    if (key != null) key.SetValue("TaskbarDa", 0, RegistryValueKind.DWord);
-                }
-                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Dsh"))
-                {
-                    if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
-                }
-                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Policies\Microsoft\Windows\Widgets"))
-                {
-                    if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
-                }
-                try
-                {
-                    using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Dsh"))
-                    {
-                        if (key != null) key.SetValue("AllowNewsAndInterests", 0, RegistryValueKind.DWord);
-                    }
-                }
-                catch { }
-                try
-                {
-                    using (var key = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\Policies\Microsoft\Windows\Widgets"))
-                    {
-                        if (key != null) key.SetValue("AllowWidgets", 0, RegistryValueKind.DWord);
-                    }
-                }
-                catch { }
-
-                string[] procs = new string[] { "Widgets", "WidgetService", "WindowsWidgets", "NewsAndInterests" };
-                foreach (var pName in procs)
-                {
-                    try { foreach (var p in Process.GetProcessesByName(pName)) { try { p.Kill(); } catch { } } } catch { }
-                }
-
-                UIntPtr dummy;
-                SendMessageTimeout((IntPtr)0xFFFF, 0x001A, UIntPtr.Zero, "TraySettings", 0x0002, 1000, out dummy);
-
-                foreach (var exp in Process.GetProcessesByName("explorer"))
-                {
-                    try { exp.Kill(); } catch { }
-                }
+                    FileName = "cmd.exe",
+                    Arguments = "/c reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Dsh\" /v \"AllowNewsAndInterests\" /t REG_DWORD /d 0 /f >nul 2>&1 & reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Widgets\" /v \"AllowWidgets\" /t REG_DWORD /d 0 /f >nul 2>&1 & reg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\" /v \"TaskbarDa\" /t REG_DWORD /d 0 /f >nul 2>&1 & taskkill /f /im Widgets.exe >nul 2>&1 & taskkill /f /im WidgetService.exe >nul 2>&1 & taskkill /f /im explorer.exe >nul 2>&1 & start explorer.exe",
+                    Verb = "runas",
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+                var proc = Process.Start(psi);
+                if (proc != null) proc.WaitForExit(7000);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Log("ForceDisableNativeWidgetsAndRestartExplorer error: " + ex);
+                try
+                {
+                    Process.Start(new ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true });
+                }
+                catch { }
+            }
         }
 
         public static void Log(string msg)
@@ -1048,11 +1024,11 @@ namespace RuWeatherWidget
             menu.Items.Add(mAuto);
 
             var mDisableNative = new MenuItem();
-            mDisableNative.Header = "⚙️  Скрыть штатный виджет Windows";
+            mDisableNative.Header = "⚙️  Скрыть штатный виджет Windows (принудительно)";
             mDisableNative.Click += delegate
             {
                 var res = MessageBox.Show(
-                    "Отключить встроенный виджет Windows 11 и перезапустить Проводник?\r\n\r\nЭто устранит наложение и освободит место на панели задач.",
+                    "Отключить встроенный виджет Windows 11 через групповую политику и перезапустить Проводник?\r\n\r\n(Потребуется подтвердить права администратора в окне UAC)",
                     "Скрыть штатный виджет Windows",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Question);
@@ -1062,6 +1038,18 @@ namespace RuWeatherWidget
                 }
             };
             menu.Items.Add(mDisableNative);
+
+            var mTaskbarSettings = new MenuItem();
+            mTaskbarSettings.Header = "🛠️  Параметры панели задач (выключить вручную)";
+            mTaskbarSettings.Click += delegate
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true });
+                }
+                catch { }
+            };
+            menu.Items.Add(mTaskbarSettings);
 
             menu.Items.Add(new Separator());
 
