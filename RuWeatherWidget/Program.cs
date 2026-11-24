@@ -1390,6 +1390,7 @@ namespace RuWeatherWidget
         public const uint SWP_NOMOVE = 0x0002;
         public const uint SWP_NOSIZE = 0x0001;
         public const uint SWP_HIDEWINDOW = 0x0080;
+        public const uint SWP_NOZORDER = 0x0004;
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -1398,6 +1399,10 @@ namespace RuWeatherWidget
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+        public const uint GW_HWNDPREV = 3;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct WINDOWPOS
@@ -1412,6 +1417,7 @@ namespace RuWeatherWidget
         }
 
         public const int WM_WINDOWPOSCHANGING = 0x0046;
+        public const int WM_WINDOWPOSCHANGED = 0x0047;
         public const int WM_SHOWWINDOW = 0x0018;
         public const int WM_SYSCOMMAND = 0x0112;
         public const int SC_MINIMIZE = 0xF020;
@@ -1425,6 +1431,7 @@ namespace RuWeatherWidget
         public const int WS_EX_TOOLWINDOW = 0x00000080;
         public const int WS_EX_NOACTIVATE = 0x08000000;
         public const int WS_EX_APPWINDOW = 0x00040000;
+        public const int WS_EX_TOPMOST = 0x00000008;
 
         private IntPtr _lastOwnerTray = IntPtr.Zero;
 
@@ -1457,7 +1464,15 @@ namespace RuWeatherWidget
             {
                 if (!IsVisible)
                 {
-                    Show();
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        Show();
+                        var h = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                        if (h != IntPtr.Zero)
+                        {
+                            SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        }
+                    }));
                 }
             };
 
@@ -1467,7 +1482,7 @@ namespace RuWeatherWidget
                 Program.Log("TaskbarWidgetWindow Loaded begin: hwnd=" + helper.Handle);
 
                 int exStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
-                exStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                exStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
                 exStyle &= ~WS_EX_APPWINDOW;
                 SetWindowLong(helper.Handle, GWL_EXSTYLE, exStyle);
 
@@ -1553,11 +1568,31 @@ namespace RuWeatherWidget
                     if ((pos.flags & SWP_HIDEWINDOW) != 0)
                     {
                         pos.flags &= ~SWP_HIDEWINDOW;
+                        pos.flags |= SWP_SHOWWINDOW;
+                        changed = true;
+                    }
+                    // Prevent lowering in Z-order by "Show Desktop" (Win+D, corner button)
+                    if ((pos.flags & SWP_NOZORDER) == 0 && pos.hwndInsertAfter != HWND_TOPMOST && pos.hwndInsertAfter != IntPtr.Zero)
+                    {
+                        pos.flags |= SWP_NOZORDER;
+                        pos.hwndInsertAfter = HWND_TOPMOST;
                         changed = true;
                     }
                     if (changed)
                     {
                         Marshal.StructureToPtr(pos, lParam, false);
+                    }
+                }
+                catch { }
+            }
+            if (msg == WM_WINDOWPOSCHANGED && lParam != IntPtr.Zero)
+            {
+                try
+                {
+                    var pos = (WINDOWPOS)Marshal.PtrToStructure(lParam, typeof(WINDOWPOS));
+                    if ((pos.flags & SWP_NOZORDER) == 0 && pos.hwndInsertAfter != HWND_TOPMOST && pos.hwndInsertAfter != IntPtr.Zero)
+                    {
+                        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
                     }
                 }
                 catch { }
@@ -1973,7 +2008,12 @@ namespace RuWeatherWidget
                     if (!IsVisible) Show();
                 }
 
-                if (needsShow || curR.Left != targetX || curR.Top != targetY || (curR.Right - curR.Left) != targetW || (curR.Bottom - curR.Top) != targetH)
+                int curExStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
+                bool isTopmost = (curExStyle & WS_EX_TOPMOST) != 0;
+                IntPtr prevHwnd = GetWindow(helper.Handle, GW_HWNDPREV);
+                bool needsZOrderFix = !isTopmost || prevHwnd != IntPtr.Zero;
+
+                if (needsShow || needsZOrderFix || curR.Left != targetX || curR.Top != targetY || (curR.Right - curR.Left) != targetW || (curR.Bottom - curR.Top) != targetH)
                 {
                     SetWindowPos(helper.Handle, HWND_TOPMOST, targetX, targetY, targetW, targetH, SWP_SHOWWINDOW | SWP_NOACTIVATE);
                 }
