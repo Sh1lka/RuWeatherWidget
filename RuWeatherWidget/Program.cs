@@ -683,7 +683,9 @@ namespace RuWeatherWidget
                 else if (t.EndsWith("°")) t += "C";
                 data.Temp = t;
 
-                data.FeelsLike = mSummary.Groups[3].Value.Trim().Replace("−", "-") + "°";
+                string fl = mSummary.Groups[3].Value.Trim().Replace("−", "-");
+                if (!fl.EndsWith("°")) fl += "°";
+                data.FeelsLike = fl;
                 string p = mSummary.Groups[4].Value.Trim();
                 if (p.IndexOf("мм рт. ст.", StringComparison.OrdinalIgnoreCase) < 0) p = Regex.Replace(p, "мм.*", "мм рт. ст.");
                 data.Pressure = p;
@@ -706,7 +708,12 @@ namespace RuWeatherWidget
                 if (mCond.Success) data.Condition = Capitalize(mCond.Groups[1].Value.Trim());
 
                 var mFeels = Regex.Match(html, "ощущается как\\s*([^.]+)");
-                if (mFeels.Success) data.FeelsLike = mFeels.Groups[1].Value.Trim().Replace("−", "-") + "°";
+                if (mFeels.Success)
+                {
+                    string fl = mFeels.Groups[1].Value.Trim().Replace("−", "-");
+                    if (!fl.EndsWith("°")) fl += "°";
+                    data.FeelsLike = fl;
+                }
 
                 var mPress = Regex.Match(html, "Давление\\s*([\\d\\s]+мм\\s*рт\\.\\s*ст\\.)");
                 if (mPress.Success) data.Pressure = mPress.Groups[1].Value.Trim();
@@ -727,17 +734,63 @@ namespace RuWeatherWidget
             data.DateText = days[(int)now.DayOfWeek] + ", " + now.Day + " " + months[now.Month];
             data.IconType = WeatherIcons.DetermineIconType(data.Condition);
 
-            var dailyMatches = Regex.Matches(html, "Прогноз погоды на\\s*([^:]+):\\s*([^·]+)·\\s*([^·<\\r\\n]+)");
-            foreach (Match dm in dailyMatches)
+            var seenDays = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var dailyCards = Regex.Matches(html, "(?s)<p class=\"[^\"]*visuallyHidden[^\"]*\">((?:Сегодня|Завтра|[А-Яа-я]+),\\s*\\d+\\s*[а-я]+):<br />(.*?)</p>");
+            foreach (Match dm in dailyCards)
             {
-                string dayLabel = dm.Groups[1].Value.Trim();
-                string cond = Capitalize(dm.Groups[2].Value.Trim());
-                string tempRange = dm.Groups[3].Value.Trim().Replace("−", "-").Replace("…", " / ").Replace("–", " / ").Replace(" ", "");
-                if (!tempRange.EndsWith("°")) tempRange += "°";
+                string header = dm.Groups[1].Value.Trim();
+                if (seenDays.Contains(header)) continue;
+                seenDays.Add(header);
+
+                string dayName;
+                if (header.StartsWith("Сегодня", StringComparison.OrdinalIgnoreCase))
+                    dayName = "Сегодня";
+                else if (header.StartsWith("Завтра", StringComparison.OrdinalIgnoreCase))
+                    dayName = "Завтра";
+                else
+                {
+                    string[] parts = header.Split(',');
+                    dayName = Capitalize(parts[0].Trim());
+                }
+
+                string body = dm.Groups[2].Value;
+                string dayTemp = "";
+                string dayCond = "";
+                string nightTemp = "";
+
+                var mDay = Regex.Match(body, "днём\\s*([−\\-\\+]?\\d+)°.*?([а-я\\s,]+),\\s*скорость", RegexOptions.IgnoreCase);
+                if (mDay.Success)
+                {
+                    dayTemp = mDay.Groups[1].Value.Replace("−", "-");
+                    dayCond = mDay.Groups[2].Value.Trim().Trim(',', ' ');
+                }
+                else
+                {
+                    var mDayAlt = Regex.Match(body, "днём\\s*([−\\-\\+]?\\d+)°", RegexOptions.IgnoreCase);
+                    if (mDayAlt.Success) dayTemp = mDayAlt.Groups[1].Value.Replace("−", "-");
+                }
+
+                var mNight = Regex.Match(body, "ночью\\s*([−\\-\\+]?\\d+)°", RegexOptions.IgnoreCase);
+                if (mNight.Success) nightTemp = mNight.Groups[1].Value.Replace("−", "-");
+
+                if (string.IsNullOrEmpty(dayCond))
+                {
+                    var mAny = Regex.Match(body, ",\\s*([а-я\\s]{4,30}?),\\s*скорость", RegexOptions.IgnoreCase);
+                    if (mAny.Success) dayCond = mAny.Groups[1].Value.Trim();
+                    else dayCond = "Пасмурно";
+                }
+
+                string tempRange;
+                if (!string.IsNullOrEmpty(nightTemp) && !string.IsNullOrEmpty(dayTemp))
+                    tempRange = nightTemp + " / " + dayTemp + "°";
+                else if (!string.IsNullOrEmpty(dayTemp))
+                    tempRange = dayTemp + "°";
+                else
+                    tempRange = "0°";
 
                 var dp = new DailyPoint();
-                dp.DayName = Capitalize(dayLabel);
-                dp.Condition = cond;
+                dp.DayName = dayName;
+                dp.Condition = Capitalize(dayCond);
                 dp.TempMinMax = tempRange;
                 dp.IconType = WeatherIcons.DetermineIconType(dp.Condition);
                 data.Daily.Add(dp);
@@ -3077,7 +3130,7 @@ namespace RuWeatherWidget
                 db.Margin = new Thickness(0, 0, 0, 4);
 
                 var dg = new Grid();
-                dg.ColumnDefinitions.Add(new ColumnDefinition() { Width = new GridLength(45) });
+                dg.ColumnDefinitions.Add(new ColumnDefinition() { Width = new GridLength(62) });
                 dg.ColumnDefinitions.Add(new ColumnDefinition() { Width = new GridLength(30) });
                 dg.ColumnDefinitions.Add(new ColumnDefinition() { Width = new GridLength(1, GridUnitType.Star) });
                 dg.ColumnDefinitions.Add(new ColumnDefinition() { Width = GridLength.Auto });

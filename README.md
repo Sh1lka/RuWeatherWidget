@@ -1,9 +1,9 @@
-# RuWeatherWidget v1.3.1
+# RuWeatherWidget v1.3.2
 
 > **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, подробным прогнозом на 5 дней, выбором сервиса погоды (Яндекс, AccuWeather, Mail.ru), современным меню в стиле Fluent Design и встроенным блокировщиком рекламы.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows)](https://microsoft.com/windows)
-[![Version](https://img.shields.io/badge/Version-1.3.1-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
+[![Version](https://img.shields.io/badge/Version-1.3.2-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
 [![Framework](https://img.shields.io/badge/.NET-Framework%204.8%20%7C%20WPF-512BD4)](https://dotnet.microsoft.com/)
 [![Engine](https://img.shields.io/badge/Web-Microsoft%20WebView2%20(Chromium)-008272)](https://developer.microsoft.com/microsoft-edge/webview2/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -45,6 +45,18 @@
 <p align="center">
   <img src="docs/screenshots/start_menu.png" alt="Виджет при открытом меню Пуск" width="850" />
 </p>
+
+---
+
+## 🚀 Что нового в версии 1.3.2
+
+- ☀️ **Исправление 5-дневного прогноза погоды Яндекс:**
+  - Устранено ошибочное попадание навигационных ссылок («Неделю», «Выходные», «Картах») и SVG-разметки в список прогноза. Теперь данные извлекаются напрямую из карточек подробного прогноза по дням: отображаются корректные дни недели («Сегодня», «Завтра», «Четверг», «Пятница», «Суббота»), точные температуры ночь/день и метеоусловия.
+  - Исправлено задвоение значка градуса в блоке «Ощущается как» (`-2°°` -> `-2°`).
+- 👤 **Издатель в установленных программах изменен на `Sh1lka`:**
+  - В реестре Windows (раздел «Установка и удаление программ» / «Параметры -> Приложения») издателем виджета теперь отображается **Sh1lka** вместо Antigravity.
+- ⚙️ **Умное открытие параметров панели задач:**
+  - Окно «Параметры панели задач» (`ms-settings:taskbar`) теперь открывается инсталлятором **только в том случае, если штатный виджет Windows действительно включен** в системе (`TaskbarDa == 1`). Если виджет уже отключен, окно параметров не появляется и не отвлекает пользователя.
 
 ---
 

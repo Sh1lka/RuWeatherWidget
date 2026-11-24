@@ -239,12 +239,16 @@ namespace RuWeatherInstaller
             // 6. Disable default Windows 11 widgets button if requested
             if (disableDefault)
             {
-                if (progress != null) progress("Настройка панели задач...", 0.8);
-                try
+                bool widgetsEnabled = AreWindowsWidgetsEnabled();
+                if (widgetsEnabled)
                 {
-                    Process.Start(new ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true });
+                    if (progress != null) progress("Настройка панели задач...", 0.8);
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true });
+                    }
+                    catch { }
                 }
-                catch { }
                 DisableWindows11Widgets(false);
             }
 
@@ -300,8 +304,8 @@ namespace RuWeatherInstaller
                     if (key != null)
                     {
                         key.SetValue("DisplayName", "Виджет погоды (Русский для Windows 11)");
-                        key.SetValue("DisplayVersion", "1.3.1");
-                        key.SetValue("Publisher", "Antigravity");
+                        key.SetValue("DisplayVersion", "1.3.2");
+                        key.SetValue("Publisher", "Sh1lka");
                         key.SetValue("DisplayIcon", targetExe + ",0");
                         key.SetValue("InstallLocation", targetDir);
                         key.SetValue("UninstallString", "\"" + uninstallerExe + "\" /uninstall");
@@ -337,6 +341,58 @@ namespace RuWeatherInstaller
         public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
         public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+
+        public static bool AreWindowsWidgetsEnabled()
+        {
+            try
+            {
+                using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Dsh"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("AllowNewsAndInterests");
+                        if (val is int && (int)val == 0) return false;
+                    }
+                }
+                using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows\Widgets"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("AllowWidgets");
+                        if (val is int && (int)val == 0) return false;
+                    }
+                }
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Policies\Microsoft\Dsh"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("AllowNewsAndInterests");
+                        if (val is int && (int)val == 0) return false;
+                    }
+                }
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Policies\Microsoft\Windows\Widgets"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("AllowWidgets");
+                        if (val is int && (int)val == 0) return false;
+                    }
+                }
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"))
+                {
+                    if (key != null)
+                    {
+                        object val = key.GetValue("TaskbarDa");
+                        if (val is int && (int)val == 0) return false;
+                    }
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         public static void DisableWindows11Widgets(bool restartExplorer)
         {
