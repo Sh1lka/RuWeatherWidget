@@ -2763,7 +2763,7 @@ namespace RuWeatherWidget
             {
                 try
                 {
-                    string url = string.Format(CultureInfo.InvariantCulture, "https://yandex.ru/pogoda/maps/nowcast?lat={0:F4}&lon={1:F4}", _app.Config.Lat, _app.Config.Lon);
+                    string url = string.Format(CultureInfo.InvariantCulture, "https://yandex.ru/pogoda/ru/maps/nowcast?lat={0:F4}&lon={1:F4}", _app.Config.Lat, _app.Config.Lon);
                     Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
                 }
                 catch { }
@@ -2784,7 +2784,7 @@ namespace RuWeatherWidget
                     }
 
                     string url = string.Format(CultureInfo.InvariantCulture,
-                        "https://yandex.ru/pogoda/maps/nowcast?lat={0:F4}&lon={1:F4}&ll={1:F4}_{0:F4}&z=9",
+                        "https://yandex.ru/pogoda/ru/maps/nowcast?lat={0:F4}&lon={1:F4}&ll={1:F4}_{0:F4}&z=9",
                         _app.Config.Lat, _app.Config.Lon);
 
                     if (!_isWebViewInitialized)
@@ -2805,10 +2805,8 @@ namespace RuWeatherWidget
                             try
                             {
                                 string targetUri = args.Uri.ToLowerInvariant();
-                                if (targetUri.StartsWith("https://yandex.ru/pogoda/maps/nowcast") ||
-                                    targetUri.StartsWith("https://yandex.ru/pogoda/maps?") ||
-                                    targetUri.StartsWith("https://yandex.ru/pogoda/maps/") ||
-                                    targetUri.StartsWith("about:blank"))
+                                if (targetUri.StartsWith("about:blank") ||
+                                    (targetUri.Contains("yandex.") && targetUri.Contains("/maps")))
                                 {
                                     return;
                                 }
@@ -2862,6 +2860,30 @@ namespace RuWeatherWidget
 (function() {
     window.__widgetLat = " + _app.Config.Lat.ToString("F4", CultureInfo.InvariantCulture) + @";
     window.__widgetLon = " + _app.Config.Lon.ToString("F4", CultureInfo.InvariantCulture) + @";
+
+    // Intercept SPA routing (history.pushState / history.replaceState) to block navigating away from maps
+    try {
+        var origPush = history.pushState;
+        history.pushState = function(state, title, url) {
+            if (url && typeof url === 'string') {
+                var u = url.toLowerCase();
+                if (u.indexOf('/maps') === -1 && u.indexOf('about:blank') === -1) {
+                    return;
+                }
+            }
+            return origPush.apply(history, arguments);
+        };
+        var origReplace = history.replaceState;
+        history.replaceState = function(state, title, url) {
+            if (url && typeof url === 'string') {
+                var u = url.toLowerCase();
+                if (u.indexOf('/maps') === -1 && u.indexOf('about:blank') === -1) {
+                    return;
+                }
+            }
+            return origReplace.apply(history, arguments);
+        };
+    } catch(e) {}
 
     function getFallbackPos() {
         var lt = window.__widgetLat || " + _app.Config.Lat.ToString("F4", CultureInfo.InvariantCulture) + @";
@@ -2927,33 +2949,50 @@ namespace RuWeatherWidget
         navigator.geolocation.clearWatch = function(id) {};
     }
 
-    var css = '[class*=""serviceLogo""],[class*=""AppLogo""],[class*=""service-logo""],a[href*=""/pogoda/ru""],a[href*=""/pogoda?""] { pointer-events: none !important; cursor: default !important; user-select: none !important; } ' +
+    var css = '[class*=""serviceLogo""],[class*=""AppLogo""],[class*=""rootLogo""],[class*=""service-logo""],a[href*=""/pogoda/ru?""],a[href*=""/pogoda?""],a[href*=""ya.ru""] { pointer-events: none !important; cursor: default !important; user-select: none !important; } ' +
               '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""advert""],[class*=""Advert""],[class*=""Banner""],[class*=""banner""],[class*=""yandex_rtb""],[id*=""yandex_rtb""],[class*=""yap-R-""],[class*=""yap-layout""],iframe[src*=""an.yandex.ru""],iframe[src*=""yabs.yandex.ru""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""Rating""],[class*=""rating""],[class*=""Nps""],[class*=""nps""],[class*=""speechBubble""],[class*=""toast""],[class*=""Toast""] { display: none !important; height: 0 !important; min-height: 0 !important; max-height: 0 !important; padding: 0 !important; margin: 0 !important; opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }';
     
     function injectStyle() {
-        if (!document.head && !document.documentElement) return;
+        var target = document.head || document.documentElement;
+        if (!target) return;
+        if (document.getElementById('ru-weather-custom-css')) return;
         var s = document.createElement('style');
+        s.id = 'ru-weather-custom-css';
         s.type = 'text/css';
         s.appendChild(document.createTextNode(css));
-        (document.head || document.documentElement).appendChild(s);
+        target.appendChild(s);
     }
     injectStyle();
 
     // Intercept clicks on any external/navigation links, keeping map interaction controls working
-    document.addEventListener('click', function(e) {
+    window.addEventListener('click', function(e) {
         var link = e.target ? e.target.closest('a') : null;
         if (link) {
             var href = link.getAttribute('href');
-            if (href && (href.indexOf('://') !== -1 || href.startsWith('//') || href.startsWith('/'))) {
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                return false;
+            if (href) {
+                var h = href.toLowerCase();
+                if (h.indexOf('/maps') === -1) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    return false;
+                }
             }
         }
     }, true);
 
     function cleanAds() {
+        injectStyle();
+        // Disarm logo and external links completely
+        try {
+            document.querySelectorAll('[class*=""AppLogo""],[class*=""serviceLogo""],[class*=""rootLogo""],a[href*=""/pogoda/ru?""],a[href*=""/pogoda?""],a[href*=""ya.ru""]').forEach(function(el) {
+                el.style.pointerEvents = 'none';
+                el.style.cursor = 'default';
+                el.removeAttribute('href');
+                el.setAttribute('tabindex', '-1');
+            });
+        } catch(e) {}
+
         var sel = '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""advert""],[class*=""Advert""],[class*=""yandex_rtb""],[id*=""yandex_rtb""],[class*=""yap-R-""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""speechBubble""],[class*=""Rating""],[class*=""rating""],[class*=""Nps""],[class*=""nps""]';
         var items = document.querySelectorAll(sel);
         for (var i = 0; i < items.length; i++) {
@@ -2962,26 +3001,37 @@ namespace RuWeatherWidget
         }
         // Remove feedback popups like 'Как вам Яндекс Погода?'
         try {
-            var all = document.querySelectorAll('div, section, article, [role=""dialog""]');
-            for (var j = 0; j < all.length; j++) {
-                var t = all[j].innerText || all[j].textContent || '';
-                if (t.indexOf('Как вам') !== -1 || t.indexOf('Оцените') !== -1) {
-                    var dlg = all[j].closest('[role=""dialog""]') || all[j];
-                    dlg.style.display = 'none';
-                    if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
+            var dlgs = document.querySelectorAll('[role=""dialog""], [class*=""Modal""], [class*=""modal""], [class*=""Popup""], [class*=""popup""]');
+            for (var j = 0; j < dlgs.length; j++) {
+                var t = dlgs[j].innerText || dlgs[j].textContent || '';
+                if (t.indexOf('Как вам') !== -1 || t.indexOf('Оцените') !== -1 || t.indexOf('отзыв') !== -1) {
+                    dlgs[j].style.display = 'none';
+                    if (dlgs[j].parentNode) dlgs[j].parentNode.removeChild(dlgs[j]);
                 }
             }
         } catch(e) {}
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', cleanAds);
+        document.addEventListener('DOMContentLoaded', function() {
+            injectStyle();
+            cleanAds();
+        });
     } else {
+        injectStyle();
         cleanAds();
     }
 
+    var cleanTimer = null;
+    function scheduleClean() {
+        if (cleanTimer) return;
+        cleanTimer = setTimeout(function() {
+            cleanTimer = null;
+            cleanAds();
+        }, 300);
+    }
     var observer = new MutationObserver(function() {
-        cleanAds();
+        scheduleClean();
     });
     observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
 })();";
@@ -2995,9 +3045,62 @@ namespace RuWeatherWidget
                             try
                             {
                                 _webView.CoreWebView2.ExecuteScriptAsync(@"
-document.querySelectorAll('[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""speechBubble""]').forEach(function(e){ e.style.display='none'; e.remove(); });
-document.querySelectorAll('[class*=""serviceLogo""],[class*=""AppLogo""],a[href*=""/pogoda/ru""],a[href*=""/pogoda?""]').forEach(function(e){ e.style.pointerEvents='none'; e.style.cursor='default'; });
-");
+(function() {
+    try {
+        var s = document.createElement('style');
+        s.id = 'ru-weather-shield-css';
+        s.textContent = '[class*=""AppLogo""],[class*=""serviceLogo""],[class*=""rootLogo""] { pointer-events: none !important; cursor: default !important; user-select: none !important; } ' +
+                        '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""speechBubble""] { display: none !important; height: 0 !important; opacity: 0 !important; visibility: hidden !important; }';
+        if (document.head) document.head.appendChild(s);
+    } catch(e) {}
+
+    try {
+        var origPush = history.pushState;
+        history.pushState = function(state, title, url) {
+            if (url && typeof url === 'string') {
+                var u = url.toLowerCase();
+                if (u.indexOf('/maps') === -1 && u.indexOf('about:blank') === -1) {
+                    return;
+                }
+            }
+            return origPush.apply(history, arguments);
+        };
+        var origReplace = history.replaceState;
+        history.replaceState = function(state, title, url) {
+            if (url && typeof url === 'string') {
+                var u = url.toLowerCase();
+                if (u.indexOf('/maps') === -1 && u.indexOf('about:blank') === -1) {
+                    return;
+                }
+            }
+            return origReplace.apply(history, arguments);
+        };
+    } catch(e) {}
+
+    window.addEventListener('click', function(ev) {
+        var link = ev.target ? ev.target.closest('a') : null;
+        if (link) {
+            var href = link.getAttribute('href');
+            if (href && href.toLowerCase().indexOf('/maps') === -1) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                ev.stopImmediatePropagation();
+                return false;
+            }
+        }
+    }, true);
+
+    function disarm() {
+        document.querySelectorAll('[class*=""AppLogo""],[class*=""serviceLogo""],[class*=""rootLogo""]').forEach(function(el) {
+            el.style.pointerEvents = 'none';
+            el.style.cursor = 'default';
+            el.removeAttribute('href');
+        });
+        document.querySelectorAll('[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""speechBubble""]').forEach(function(e){ e.style.display='none'; e.remove(); });
+    }
+    disarm();
+    setInterval(disarm, 500);
+})();");
                             }
                             catch { }
                         };
