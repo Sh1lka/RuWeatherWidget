@@ -1434,6 +1434,113 @@ namespace RuWeatherWidget
         public const int WS_EX_APPWINDOW = 0x00040000;
         public const int WS_EX_TOPMOST = 0x00000008;
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr WindowFromPoint(POINT pt);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT { public int x; public int y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MSLLHOOKSTRUCT
+        {
+            public POINT pt;
+            public uint mouseData;
+            public uint flags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        public const int WH_MOUSE_LL = 14;
+        public const int WM_LBUTTONDOWN = 0x0201;
+        public const int WM_RBUTTONDOWN = 0x0204;
+        public const int WM_NCLBUTTONDOWN = 0x00A1;
+        public const int WM_NCRBUTTONDOWN = 0x00A4;
+
+        private ContextMenu _activeMenu = null;
+        private IntPtr _menuMouseHook = IntPtr.Zero;
+        private LowLevelMouseProc _menuMouseProc;
+
+        private void StartMenuMouseHook()
+        {
+            if (_menuMouseHook == IntPtr.Zero)
+            {
+                try
+                {
+                    _menuMouseProc = MenuMouseHookCallback;
+                    using (var curProcess = Process.GetCurrentProcess())
+                    using (var curModule = curProcess.MainModule)
+                    {
+                        _menuMouseHook = SetWindowsHookEx(WH_MOUSE_LL, _menuMouseProc, GetModuleHandle(curModule.ModuleName), 0);
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private void StopMenuMouseHook()
+        {
+            if (_menuMouseHook != IntPtr.Zero)
+            {
+                try
+                {
+                    UnhookWindowsHookEx(_menuMouseHook);
+                    _menuMouseHook = IntPtr.Zero;
+                }
+                catch { }
+            }
+        }
+
+        private IntPtr MenuMouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0 && (wParam == (IntPtr)WM_LBUTTONDOWN || wParam == (IntPtr)WM_RBUTTONDOWN || wParam == (IntPtr)WM_NCLBUTTONDOWN || wParam == (IntPtr)WM_NCRBUTTONDOWN))
+            {
+                try
+                {
+                    var hookStruct = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                    POINT pt = hookStruct.pt;
+
+                    IntPtr hUnder = WindowFromPoint(pt);
+                    uint pid = 0;
+                    if (hUnder != IntPtr.Zero)
+                    {
+                        GetWindowThreadProcessId(hUnder, out pid);
+                    }
+
+                    uint myPid = (uint)Process.GetCurrentProcess().Id;
+                    if (pid != myPid)
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (_activeMenu != null && _activeMenu.IsOpen)
+                            {
+                                _activeMenu.IsOpen = false;
+                            }
+                        }));
+                    }
+                }
+                catch { }
+            }
+            return CallNextHookEx(_menuMouseHook, nCode, wParam, lParam);
+        }
+
         private IntPtr _lastOwnerTray = IntPtr.Zero;
 
         public TaskbarWidgetWindow(Program app)
@@ -1518,7 +1625,10 @@ namespace RuWeatherWidget
             _posTimer.Tick += (s, e) => UpdatePosition();
             _posTimer.Start();
 
-            Closed += delegate { RestoreTaskbar(); };
+            Closed += delegate {
+                StopMenuMouseHook();
+                RestoreTaskbar();
+            };
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -1717,10 +1827,15 @@ namespace RuWeatherWidget
             _app.IsContextMenuOpen = true;
             bool isLight = ThemeManager.IsTaskbarLight();
             var menu = new ContextMenu();
+            _activeMenu = menu;
             menu.PlacementTarget = this;
             menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
             menu.Resources = FluentTheme.GetMenuResources(isLight);
-            menu.Closed += delegate { _app.IsContextMenuOpen = false; };
+            menu.Closed += delegate {
+                _app.IsContextMenuOpen = false;
+                _activeMenu = null;
+                StopMenuMouseHook();
+            };
 
             var mRefresh = new MenuItem();
             mRefresh.Header = "🔄  Обновить погоду";
@@ -1875,6 +1990,7 @@ namespace RuWeatherWidget
             };
             menu.Items.Add(mExit);
 
+            StartMenuMouseHook();
             menu.IsOpen = true;
         }
 
