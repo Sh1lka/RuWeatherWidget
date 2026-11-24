@@ -2672,7 +2672,6 @@ namespace RuWeatherWidget
             _pageRadar = new Grid();
             _pageRadar.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto }); // 0: Header card
             _pageRadar.RowDefinitions.Add(new RowDefinition() { Height = new GridLength(1, GridUnitType.Star) }); // 1: WebView2
-            _pageRadar.RowDefinitions.Add(new RowDefinition() { Height = GridLength.Auto }); // 2: Open in browser button
 
             // 1. Radar Header Card
             _headCard = new Border();
@@ -2709,7 +2708,7 @@ namespace RuWeatherWidget
             _radarContainer.BorderThickness = new Thickness(1);
             _radarContainer.CornerRadius = new CornerRadius(6);
             _radarContainer.ClipToBounds = true;
-            _radarContainer.Margin = new Thickness(0, 0, 0, 8);
+            _radarContainer.Margin = new Thickness(0);
 
             var mapGrid = new Grid();
 
@@ -2730,28 +2729,6 @@ namespace RuWeatherWidget
             _radarContainer.Child = mapGrid;
             Grid.SetRow(_radarContainer, 1);
             _pageRadar.Children.Add(_radarContainer);
-
-            // 3. Open in Browser Button
-            var btnYandex = new Button();
-            btnYandex.Content = "🌐  Открыть полную карту в Яндекс.Погоде ↗";
-            btnYandex.FontSize = 12;
-            btnYandex.FontWeight = FontWeights.SemiBold;
-            btnYandex.Background = new SolidColorBrush(Color.FromRgb(255, 204, 0));
-            btnYandex.Foreground = Brushes.Black;
-            btnYandex.BorderThickness = new Thickness(0);
-            btnYandex.Padding = new Thickness(10, 7, 10, 7);
-            btnYandex.Cursor = Cursors.Hand;
-            btnYandex.Click += delegate
-            {
-                try
-                {
-                    string url = string.Format(CultureInfo.InvariantCulture, "https://yandex.ru/pogoda/maps/nowcast?lat={0:F4}&lon={1:F4}", _app.Config.Lat, _app.Config.Lon);
-                    Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-                }
-                catch { }
-            };
-            Grid.SetRow(btnYandex, 2);
-            _pageRadar.Children.Add(btnYandex);
         }
 
         public void LoadRadarMap()
@@ -2787,6 +2764,21 @@ namespace RuWeatherWidget
                             {
                                 args.State = Microsoft.Web.WebView2.Core.CoreWebView2PermissionState.Allow;
                             }
+                        };
+
+                        _webView.CoreWebView2.NavigationStarting += (sender, args) =>
+                        {
+                            // Block any navigation away from the radar map
+                            if (!args.Uri.StartsWith("https://yandex.ru/pogoda/maps/nowcast", StringComparison.OrdinalIgnoreCase))
+                            {
+                                args.Cancel = true;
+                            }
+                        };
+
+                        _webView.CoreWebView2.NewWindowRequested += (sender, args) =>
+                        {
+                            // Block opening new windows or external browser tabs
+                            args.Handled = true;
                         };
 
                         // Block advert domains
@@ -2883,7 +2875,8 @@ namespace RuWeatherWidget
         navigator.geolocation.clearWatch = function(id) {};
     }
 
-    var css = '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""advert""],[class*=""Advert""],[class*=""Banner""],[class*=""banner""],[class*=""yandex_rtb""],[id*=""yandex_rtb""],[class*=""yap-R-""],[class*=""yap-layout""],iframe[src*=""an.yandex.ru""],iframe[src*=""yabs.yandex.ru""] { display: none !important; height: 0 !important; min-height: 0 !important; max-height: 0 !important; padding: 0 !important; margin: 0 !important; opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }';
+    var css = 'a, [class*=""AppLogo_""], [class*=""AppHeader_logo""], [class*=""rootLogo""], [class*=""serviceLogo""], [class*=""Banner""], [class*=""banner""], [class*=""Promo""], [class*=""promo""], [class*=""Poll""], [class*=""poll""], [class*=""Feedback""], [class*=""feedback""], [class*=""Review""], [class*=""review""], [class*=""Rate""], [class*=""rate""] { pointer-events: none !important; cursor: default !important; } ' +
+              '[class*=""AppLogo_""], [class*=""AppHeader_logo""], [class*=""rootLogo""], [class*=""serviceLogo""], [class*=""Poll""], [class*=""poll""], [class*=""Feedback""], [class*=""feedback""], [class*=""Review""], [class*=""review""], [class*=""Rate""], [class*=""rate""], [class*=""AppMapsPromo""], [class*=""Promo""], [class*=""promo""], [class*=""OpenInApp""], [class*=""openInApp""], [class*=""AppMapsAdvert""], [class*=""AdvertTop""], [class*=""AppMapsAdvertTop""], [class*=""advert""], [class*=""Advert""], [class*=""Banner""], [class*=""banner""], [class*=""yandex_rtb""], [id*=""yandex_rtb""], [class*=""yap-R-""], [class*=""yap-layout""], iframe[src*=""an.yandex.ru""], iframe[src*=""yabs.yandex.ru""] { display: none !important; height: 0 !important; min-height: 0 !important; max-height: 0 !important; padding: 0 !important; margin: 0 !important; opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }';
     
     function injectStyle() {
         if (!document.head && !document.documentElement) return;
@@ -2894,13 +2887,43 @@ namespace RuWeatherWidget
     }
     injectStyle();
 
+    // Prevent any link clicks
+    document.addEventListener('click', function(e) {
+        var el = e.target;
+        while (el && el !== document.body && el !== document.documentElement) {
+            if (el.tagName === 'A' || el.hasAttribute('href') || el.hasAttribute('data-href')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                return false;
+            }
+            if (el.className && typeof el.className === 'string') {
+                if (el.className.indexOf('AppLogo') >= 0 || el.className.indexOf('Logo') >= 0 || el.className.indexOf('Poll') >= 0 || el.className.indexOf('Review') >= 0) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    return false;
+                }
+            }
+            el = el.parentElement;
+        }
+    }, true);
+
     function cleanAds() {
-        var sel = '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""advert""],[class*=""Advert""],[class*=""yandex_rtb""],[id*=""yandex_rtb""],[class*=""yap-R-""]';
+        var sel = '[class*=""AppLogo_""],[class*=""AppHeader_logo""],[class*=""rootLogo""],[class*=""serviceLogo""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""Review""],[class*=""review""],[class*=""Rate""],[class*=""rate""],[class*=""AppMapsPromo""],[class*=""Promo""],[class*=""promo""],[class*=""OpenInApp""],[class*=""openInApp""],[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""advert""],[class*=""Advert""],[class*=""yandex_rtb""],[id*=""yandex_rtb""],[class*=""yap-R-""]';
         var items = document.querySelectorAll(sel);
         for (var i = 0; i < items.length; i++) {
             items[i].style.display = 'none';
-            if (items[i].parentNode) items[i].parentNode.removeChild(items[i]);
+            items[i].style.pointerEvents = 'none';
+            if (items[i].parentNode) {
+                try { items[i].parentNode.removeChild(items[i]); } catch(e){}
+            }
         }
+        document.querySelectorAll('a').forEach(function(a) {
+            a.removeAttribute('href');
+            a.style.pointerEvents = 'none';
+            a.style.cursor = 'default';
+        });
     }
 
     if (document.readyState === 'loading') {
@@ -2923,7 +2946,10 @@ namespace RuWeatherWidget
                             if (_lblMapLoading != null) _lblMapLoading.Visibility = Visibility.Collapsed;
                             try
                             {
-                                _webView.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('[class*=\"AppMapsAdvert\"],[class*=\"AdvertTop\"],[class*=\"AppMapsAdvertTop\"]').forEach(function(e){ e.style.display='none'; e.remove(); });");
+                                _webView.CoreWebView2.ExecuteScriptAsync(@"
+                                    document.querySelectorAll('[class*=""AppLogo_""],[class*=""AppHeader_logo""],[class*=""rootLogo""],[class*=""serviceLogo""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""Review""],[class*=""review""],[class*=""Rate""],[class*=""rate""],[class*=""AppMapsPromo""],[class*=""Promo""],[class*=""promo""],[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""]').forEach(function(e){ e.style.display='none'; e.style.pointerEvents='none'; try{e.remove();}catch(x){} });
+                                    document.querySelectorAll('a').forEach(function(a){ a.removeAttribute('href'); a.style.pointerEvents='none'; a.style.cursor='default'; });
+                                ");
                             }
                             catch { }
                         };

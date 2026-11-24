@@ -1,9 +1,9 @@
-# RuWeatherWidget v1.3.2
+# RuWeatherWidget v1.3.3
 
 > **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, подробным прогнозом на 5 дней, выбором сервиса погоды (Яндекс, AccuWeather, Mail.ru), современным меню в стиле Fluent Design и встроенным блокировщиком рекламы.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows)](https://microsoft.com/windows)
-[![Version](https://img.shields.io/badge/Version-1.3.2-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
+[![Version](https://img.shields.io/badge/Version-1.3.3-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
 [![Framework](https://img.shields.io/badge/.NET-Framework%204.8%20%7C%20WPF-512BD4)](https://dotnet.microsoft.com/)
 [![Engine](https://img.shields.io/badge/Web-Microsoft%20WebView2%20(Chromium)-008272)](https://developer.microsoft.com/microsoft-edge/webview2/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -45,6 +45,16 @@
 <p align="center">
   <img src="docs/screenshots/start_menu.png" alt="Виджет при открытом меню Пуск" width="850" />
 </p>
+
+---
+
+## 🚀 Что нового в версии 1.3.3
+
+- 🚫 **Полная блокировка ссылок, логотипов и опросников на карте осадков:**
+  - Полностью заблокирована возможность перехода по внешним ссылкам в интерактивном радаре осадков.
+  - Скрыты и отключены от взаимодействия (`pointer-events: none`, `display: none`): логотип Яндекс.Погоды в левом верхнем углу, всплывающий опросник/оценка («Как вам Яндекс Погода?»), промо-баннеры и любые ссылки.
+  - На уровне ядра браузера WebView2 перехвачены события `NavigationStarting` (принудительная отмена любых попыток перехода с карты) и `NewWindowRequested` (запрет открытия ссылок в браузере или новых вкладках).
+  - Удалена нижняя внешняя кнопка открытия карты в браузере — интерактивный радар теперь занимает всю высоту окна без лишних элементов.
 
 ---
 
