@@ -333,60 +333,25 @@ namespace RuWeatherWidget
         {
             try
             {
-                IntPtr hWinsta = OpenWindowStation("winsta0", false, 0x037F);
-                if (hWinsta != IntPtr.Zero) SetProcessWindowStation(hWinsta);
-                IntPtr hDesk = OpenDesktop("default", 0, false, 0x01FF);
-
-                var appThread = new Thread(() =>
+                Log("Application Main entry");
+                bool createdNew;
+                using (var mutex = new Mutex(true, "RuWeatherWidget_SingleInstance_Mutex", out createdNew))
                 {
-                    try
-                    {
-                        if (hDesk != IntPtr.Zero)
-                        {
-                            bool okDesk = SetThreadDesktop(hDesk);
-                            Log("appThread SetThreadDesktop=" + okDesk);
-                        }
+                    Log("Mutex createdNew=" + createdNew);
+                    if (!createdNew) return;
 
-                        // Set browser emulation to IE11 mode for web controls
-                        try
-                        {
-                            string exeName = System.IO.Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName);
-                            using (var k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION"))
-                            {
-                                if (k != null) k.SetValue(exeName, 11001, RegistryValueKind.DWord);
-                            }
-                        }
-                        catch { }
+                    DisableNativeWindowsWidgets();
 
-                        Log("Application Main entry");
-                        bool createdNew;
-                        using (var mutex = new Mutex(true, "RuWeatherWidget_SingleInstance_Mutex", out createdNew))
-                        {
-                            Log("Mutex createdNew=" + createdNew);
-                            if (!createdNew) return;
-
-                            DisableNativeWindowsWidgets();
-
-                            var app = new Program();
-                            app.DispatcherUnhandledException += (s, e) => {
-                                Log("Dispatcher Exception: " + e.Exception);
-                                e.Handled = true;
-                            };
-                            AppDomain.CurrentDomain.UnhandledException += (s, e) => {
-                                Log("AppDomain Exception: " + e.ExceptionObject);
-                            };
-                            app.Run();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log("appThread Exception: " + ex);
-                    }
-                });
-
-                appThread.SetApartmentState(ApartmentState.STA);
-                appThread.Start();
-                appThread.Join();
+                    var app = new Program();
+                    app.DispatcherUnhandledException += (s, e) => {
+                        Log("Dispatcher Exception: " + e.Exception);
+                        e.Handled = true;
+                    };
+                    AppDomain.CurrentDomain.UnhandledException += (s, e) => {
+                        Log("AppDomain Exception: " + e.ExceptionObject);
+                    };
+                    app.Run();
+                }
             }
             catch (Exception ex)
             {
@@ -536,12 +501,20 @@ namespace RuWeatherWidget
             else
             {
                 _flyoutWindow.LastOpenTime = DateTime.UtcNow;
-                _flyoutWindow.SetPage(startPage);
                 _flyoutWindow.UpdateData(_currentData);
                 _flyoutWindow.PositionAbove(_taskbarWindow);
                 _flyoutWindow.Show();
+                _flyoutWindow.SetPage(startPage);
                 _flyoutWindow.Activate();
                 _flyoutWindow.Focus();
+            }
+        }
+
+        public void CloseFlyout()
+        {
+            if (_flyoutWindow != null && _flyoutWindow.IsVisible)
+            {
+                _flyoutWindow.Hide();
             }
         }
 
@@ -1439,6 +1412,25 @@ namespace RuWeatherWidget
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor;
+            public RECT rcWork;
+            public uint dwFlags;
+        }
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+        public const uint MONITOR_DEFAULTTONEAREST = 2;
+
+        [DllImport("user32.dll")]
+        public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
         public const int GWL_EXSTYLE = -20;
         public const int WS_EX_TOOLWINDOW = 0x00000080;
         public const int WS_EX_NOACTIVATE = 0x08000000;
@@ -1563,11 +1555,7 @@ namespace RuWeatherWidget
                 var helper = new System.Windows.Interop.WindowInteropHelper(this);
                 if (helper.Handle != IntPtr.Zero)
                 {
-                    IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-                    if (IsBehindTray(helper.Handle, hTray))
-                    {
-                        SetWindowPos(helper.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                    }
+                    UpdatePosition();
                 }
             }
             catch { }
@@ -1589,6 +1577,53 @@ namespace RuWeatherWidget
                 if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd") return true;
             }
             return false;
+        }
+
+        private bool _isFullscreenHidden = false;
+
+        private static bool IsFullscreenActive(IntPtr widgetHwnd)
+        {
+            try
+            {
+                IntPtr fg = GetForegroundWindow();
+                if (fg == IntPtr.Zero || fg == widgetHwnd) return false;
+                if (IsIconic(fg) || !IsWindowVisible(fg)) return false;
+
+                var sb = new StringBuilder(64);
+                GetClassName(fg, sb, 64);
+                string cls = sb.ToString();
+
+                // Exclude desktop, taskbar, start menu, system overlays, and our own windows
+                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd" ||
+                    cls == "Progman" || cls == "WorkerW" ||
+                    cls == "Windows.UI.Core.CoreWindow" ||
+                    cls == "XamlExplorerHostIslandWindow" ||
+                    cls.StartsWith("HwndWrapper[RuWeatherWidget"))
+                {
+                    return false;
+                }
+
+                IntPtr hMonWidget = MonitorFromWindow(widgetHwnd != IntPtr.Zero ? widgetHwnd : fg, MONITOR_DEFAULTTONEAREST);
+                IntPtr hMonFg = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+                if (hMonWidget == IntPtr.Zero || hMonWidget != hMonFg) return false;
+
+                var mi = new MONITORINFO();
+                mi.cbSize = Marshal.SizeOf(mi);
+                if (!GetMonitorInfo(hMonWidget, ref mi)) return false;
+
+                RECT r;
+                if (!GetWindowRect(fg, out r)) return false;
+
+                // Check if foreground window covers or exceeds the entire monitor
+                return r.Left <= mi.rcMonitor.Left &&
+                       r.Top <= mi.rcMonitor.Top &&
+                       r.Right >= mi.rcMonitor.Right &&
+                       r.Bottom >= mi.rcMonitor.Bottom;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public TaskbarWidgetWindow(Program app)
@@ -1618,15 +1653,18 @@ namespace RuWeatherWidget
 
             IsVisibleChanged += delegate
             {
-                if (!IsVisible)
+                if (!_isFullscreenHidden && !IsVisible)
                 {
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        Show();
-                        var h = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-                        if (h != IntPtr.Zero)
+                        if (!_isFullscreenHidden && !IsVisible)
                         {
-                            SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                            Show();
+                            var h = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                            if (h != IntPtr.Zero)
+                            {
+                                SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                            }
                         }
                     }));
                 }
@@ -1695,6 +1733,15 @@ namespace RuWeatherWidget
         {
             const int WM_LBUTTONUP = 0x0202;
             const int WM_RBUTTONUP = 0x0205;
+            const int WM_TOGGLE_FLYOUT = 0x0465;
+
+            if (msg == WM_TOGGLE_FLYOUT)
+            {
+                _app.ToggleFlyout((int)wParam);
+                handled = true;
+                return (IntPtr)1;
+            }
+
             if (msg == WM_LBUTTONUP)
             {
                 if (_app.IsContextMenuOpen)
@@ -1741,14 +1788,14 @@ namespace RuWeatherWidget
                         pos.flags |= SWP_NOMOVE;
                         changed = true;
                     }
-                    if ((pos.flags & SWP_HIDEWINDOW) != 0)
+                    if (!_isFullscreenHidden && (pos.flags & SWP_HIDEWINDOW) != 0)
                     {
                         pos.flags &= ~SWP_HIDEWINDOW;
                         pos.flags |= SWP_SHOWWINDOW;
                         changed = true;
                     }
                     // Prevent lowering in Z-order by "Show Desktop" (Win+D, corner button)
-                    if ((pos.flags & SWP_NOZORDER) == 0 && pos.hwndInsertAfter != HWND_TOPMOST && pos.hwndInsertAfter != IntPtr.Zero)
+                    if (!_isFullscreenHidden && (pos.flags & SWP_NOZORDER) == 0 && pos.hwndInsertAfter != HWND_TOPMOST && pos.hwndInsertAfter != IntPtr.Zero)
                     {
                         pos.flags |= SWP_NOZORDER;
                         pos.hwndInsertAfter = HWND_TOPMOST;
@@ -1763,6 +1810,7 @@ namespace RuWeatherWidget
             }
             if (msg == WM_WINDOWPOSCHANGED)
             {
+                if (_isFullscreenHidden) return IntPtr.Zero;
                 try
                 {
                     IntPtr hTray = FindWindow("Shell_TrayWnd", null);
@@ -2179,6 +2227,27 @@ namespace RuWeatherWidget
             var helper = new System.Windows.Interop.WindowInteropHelper(this);
             if (helper.Handle != IntPtr.Zero)
             {
+                bool justRestoredFromFs = false;
+                bool isFs = IsFullscreenActive(helper.Handle);
+                if (isFs)
+                {
+                    if (!_isFullscreenHidden)
+                    {
+                        _isFullscreenHidden = true;
+                        _app.CloseFlyout();
+                        SetWindowPos(helper.Handle, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+                    }
+                    return;
+                }
+                else
+                {
+                    if (_isFullscreenHidden)
+                    {
+                        _isFullscreenHidden = false;
+                        justRestoredFromFs = true;
+                    }
+                }
+
                 if (hTray != IntPtr.Zero && hTray != _lastOwnerTray)
                 {
                     SetWindowLongPtr(helper.Handle, GWLP_HWNDPARENT, hTray);
@@ -2199,7 +2268,7 @@ namespace RuWeatherWidget
                 int targetW = (int)(Width * dpiX);
                 int targetH = (int)(Height * dpiY);
 
-                bool needsShow = !IsWindowVisible(helper.Handle) || WindowState != WindowState.Normal || !IsVisible || IsIconic(helper.Handle);
+                bool needsShow = justRestoredFromFs || !IsWindowVisible(helper.Handle) || WindowState != WindowState.Normal || !IsVisible || IsIconic(helper.Handle);
                 if (needsShow)
                 {
                     if (WindowState != WindowState.Normal) WindowState = WindowState.Normal;
@@ -2298,13 +2367,14 @@ namespace RuWeatherWidget
         private StackPanel _dailyPanel;
 
         // Page 2 Radar elements
+        private static Microsoft.Web.WebView2.Core.CoreWebView2Environment _sharedWebViewEnv = null;
         private Border _headCard;
         private TextBlock _txtRadarCity;
         private TextBlock _txtRadarStatus;
+        private Grid _mapGrid;
         private Microsoft.Web.WebView2.Wpf.WebView2 _webView;
         private TextBlock _lblMapLoading;
         private Border _radarContainer;
-        private bool _isWebViewInitialized = false;
         private string _lastRadarUrl = "";
         private string _currentCity = "";
         private WeatherData _lastData = null;
@@ -2462,10 +2532,18 @@ namespace RuWeatherWidget
                 if (Visibility == Visibility.Visible)
                 {
                     StartMouseHook();
+                    if (_currentPage == 1)
+                    {
+                        LoadRadarMap();
+                    }
                 }
                 else
                 {
                     StopMouseHook();
+                    if (_currentPage == 1)
+                    {
+                        CleanupRadar();
+                    }
                 }
             }
         }
@@ -2766,13 +2844,37 @@ namespace RuWeatherWidget
             {
                 _pageForecast.Visibility = Visibility.Visible;
                 _pageRadar.Visibility = Visibility.Collapsed;
+                CleanupRadar();
             }
             else
             {
                 _pageForecast.Visibility = Visibility.Collapsed;
                 _pageRadar.Visibility = Visibility.Visible;
-                LoadRadarMap();
+                if (IsVisible)
+                {
+                    LoadRadarMap();
+                }
             }
+        }
+
+        private void CleanupRadar()
+        {
+            try
+            {
+                if (_webView != null)
+                {
+                    if (_mapGrid != null) _mapGrid.Children.Remove(_webView);
+                    _webView.Dispose();
+                    _webView = null;
+                }
+                _lastRadarUrl = "";
+                if (_lblMapLoading != null)
+                {
+                    _lblMapLoading.Text = "⏳  Загрузка Яндекс.Радара...";
+                    _lblMapLoading.Visibility = Visibility.Visible;
+                }
+            }
+            catch { }
         }
 
         private void BuildForecastPage()
@@ -2957,12 +3059,7 @@ namespace RuWeatherWidget
             _radarContainer.ClipToBounds = true;
             _radarContainer.Margin = new Thickness(0, 0, 0, 8);
 
-            var mapGrid = new Grid();
-
-            _webView = new Microsoft.Web.WebView2.Wpf.WebView2();
-            _webView.HorizontalAlignment = HorizontalAlignment.Stretch;
-            _webView.VerticalAlignment = VerticalAlignment.Stretch;
-            mapGrid.Children.Add(_webView);
+            _mapGrid = new Grid();
 
             _lblMapLoading = new TextBlock();
             _lblMapLoading.Text = "⏳  Загрузка Яндекс.Радара...";
@@ -2971,9 +3068,9 @@ namespace RuWeatherWidget
             _lblMapLoading.HorizontalAlignment = HorizontalAlignment.Center;
             _lblMapLoading.VerticalAlignment = VerticalAlignment.Center;
             _lblMapLoading.IsHitTestVisible = false;
-            mapGrid.Children.Add(_lblMapLoading);
+            _mapGrid.Children.Add(_lblMapLoading);
 
-            _radarContainer.Child = mapGrid;
+            _radarContainer.Child = _mapGrid;
             Grid.SetRow(_radarContainer, 1);
             _pageRadar.Children.Add(_radarContainer);
 
@@ -3020,10 +3117,14 @@ namespace RuWeatherWidget
 
         public void LoadRadarMap()
         {
+            if (!IsVisible) return;
+
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(async () =>
             {
                 try
                 {
+                    if (!IsVisible || _currentPage != 1) return;
+
                     if (_txtRadarCity != null)
                     {
                         _txtRadarCity.Text = "📍 " + _app.Config.City + string.Format(CultureInfo.InvariantCulture, " ({0:F2}°, {1:F2}°)", _app.Config.Lat, _app.Config.Lon);
@@ -3033,20 +3134,60 @@ namespace RuWeatherWidget
                         "https://yandex.ru/pogoda/ru/maps/nowcast?lat={0:F4}&lon={1:F4}&ll={1:F4}_{0:F4}&z=9",
                         _app.Config.Lat, _app.Config.Lon);
 
-                    if (!_isWebViewInitialized)
+                    if (_lblMapLoading != null)
                     {
-                        if (_lblMapLoading != null) _lblMapLoading.Visibility = Visibility.Visible;
+                        _lblMapLoading.Text = "⏳  Загрузка Яндекс.Радара...";
+                        _lblMapLoading.Visibility = Visibility.Visible;
+                    }
+
+                    if (_sharedWebViewEnv == null)
+                    {
                         string localData = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RuWeatherWidget", "WebView2Data");
                         if (!System.IO.Directory.Exists(localData)) System.IO.Directory.CreateDirectory(localData);
+                        _sharedWebViewEnv = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, localData);
+                    }
 
-                        var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, localData);
-                        await _webView.EnsureCoreWebView2Async(env);
+                    if (_webView == null && _mapGrid != null)
+                    {
+                        var wv = new Microsoft.Web.WebView2.Wpf.WebView2();
+                        wv.HorizontalAlignment = HorizontalAlignment.Stretch;
+                        wv.VerticalAlignment = VerticalAlignment.Stretch;
+                        _webView = wv;
+                        _mapGrid.Children.Insert(0, wv);
+                        _mapGrid.UpdateLayout();
+                        UpdateLayout();
 
-                        _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
-                        _webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+                        if (!wv.IsLoaded)
+                        {
+                            var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>();
+                            RoutedEventHandler onLoaded = null;
+                            onLoaded = (sLoaded, eLoaded) =>
+                            {
+                                wv.Loaded -= onLoaded;
+                                tcs.TrySetResult(true);
+                            };
+                            wv.Loaded += onLoaded;
+                            await tcs.Task;
+                        }
 
-                        // 1. Navigation control: prevent clicking links that navigate away from the radar map
-                        _webView.CoreWebView2.NavigationStarting += (sender, args) =>
+                        var prop = typeof(System.Windows.Interop.HwndHost).GetProperty("Handle", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+                        IntPtr h = prop != null ? (IntPtr)prop.GetValue(wv, null) : IntPtr.Zero;
+                        Program.Log("LoadRadarMap: wv.Handle=" + h + ", IsLoaded=" + wv.IsLoaded + ", ActualW=" + wv.ActualWidth + ", ActualH=" + wv.ActualHeight + ", mapGrid.ActualW=" + _mapGrid.ActualWidth + ", mapGrid.ActualH=" + _mapGrid.ActualHeight + ", IsVisible=" + IsVisible);
+
+                        await wv.EnsureCoreWebView2Async(_sharedWebViewEnv);
+
+                        wv.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                        wv.CoreWebView2.Settings.AreDevToolsEnabled = false;
+
+                        wv.CoreWebView2.PermissionRequested += (sender, args) =>
+                        {
+                            if (args.PermissionKind == Microsoft.Web.WebView2.Core.CoreWebView2PermissionKind.Geolocation)
+                            {
+                                args.State = Microsoft.Web.WebView2.Core.CoreWebView2PermissionState.Allow;
+                            }
+                        };
+
+                        wv.CoreWebView2.NavigationStarting += (sender, args) =>
                         {
                             try
                             {
@@ -3056,144 +3197,21 @@ namespace RuWeatherWidget
                                 {
                                     return;
                                 }
-
-                                // Cancel ANY external link navigation
                                 args.Cancel = true;
                             }
                             catch { }
                         };
 
-                        _webView.CoreWebView2.NewWindowRequested += (sender, args) =>
+                        wv.CoreWebView2.NewWindowRequested += (sender, args) =>
                         {
-                            // Block any popup / new window navigation
                             args.Handled = true;
                         };
 
-                        _webView.CoreWebView2.PermissionRequested += (sender, args) =>
-                        {
-                            if (args.PermissionKind == Microsoft.Web.WebView2.Core.CoreWebView2PermissionKind.Geolocation)
-                            {
-                                args.State = Microsoft.Web.WebView2.Core.CoreWebView2PermissionState.Allow;
-                            }
-                        };
-
-                        // Block advert domains
-                        try
-                        {
-                            _webView.CoreWebView2.AddWebResourceRequestedFilter("*an.yandex.ru*", Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext.All);
-                            _webView.CoreWebView2.AddWebResourceRequestedFilter("*yabs.yandex.ru*", Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext.All);
-                            _webView.CoreWebView2.AddWebResourceRequestedFilter("*adfox.ru*", Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext.All);
-
-                            _webView.CoreWebView2.WebResourceRequested += (sender, args) =>
-                            {
-                                try
-                                {
-                                    string rUri = args.Request.Uri.ToLowerInvariant();
-                                    if (rUri.Contains("an.yandex.ru") || rUri.Contains("yabs.yandex.ru") || rUri.Contains("adfox.ru"))
-                                    {
-                                        args.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(null, 403, "Blocked", "");
-                                    }
-                                }
-                                catch { }
-                            };
-                        }
-                        catch { }
-
-                        // Inject anti-ad CSS and script
-                        try
-                        {
-                            string adBlockScript = @"
+                        // Anti-ad CSS injection (pure CSS, no DOM deletion so React never crashes)
+                        string adBlockScript = @"
 (function() {
     window.__widgetLat = " + _app.Config.Lat.ToString("F4", CultureInfo.InvariantCulture) + @";
     window.__widgetLon = " + _app.Config.Lon.ToString("F4", CultureInfo.InvariantCulture) + @";
-
-    // Intercept SPA routing (history.pushState / history.replaceState) to block navigating away from maps
-    try {
-        var origPush = history.pushState;
-        history.pushState = function(state, title, url) {
-            if (url && typeof url === 'string') {
-                var u = url.toLowerCase();
-                if (u.indexOf('/maps') === -1 && u.indexOf('about:blank') === -1) {
-                    return;
-                }
-            }
-            return origPush.apply(history, arguments);
-        };
-        var origReplace = history.replaceState;
-        history.replaceState = function(state, title, url) {
-            if (url && typeof url === 'string') {
-                var u = url.toLowerCase();
-                if (u.indexOf('/maps') === -1 && u.indexOf('about:blank') === -1) {
-                    return;
-                }
-            }
-            return origReplace.apply(history, arguments);
-        };
-    } catch(e) {}
-
-    function getFallbackPos() {
-        var lt = window.__widgetLat || " + _app.Config.Lat.ToString("F4", CultureInfo.InvariantCulture) + @";
-        var ln = window.__widgetLon || " + _app.Config.Lon.ToString("F4", CultureInfo.InvariantCulture) + @";
-        return {
-            coords: {
-                latitude: lt,
-                longitude: ln,
-                accuracy: 30,
-                altitude: null,
-                altitudeAccuracy: null,
-                heading: null,
-                speed: null
-            },
-            timestamp: Date.now()
-        };
-    }
-
-    if (navigator.geolocation) {
-        var origGet = navigator.geolocation.getCurrentPosition ? navigator.geolocation.getCurrentPosition.bind(navigator.geolocation) : null;
-        navigator.geolocation.getCurrentPosition = function(success, error, options) {
-            var done = false;
-            var timer = setTimeout(function() {
-                if (!done) {
-                    done = true;
-                    if (success) success(getFallbackPos());
-                }
-            }, 1200);
-
-            if (origGet) {
-                try {
-                    origGet(function(pos) {
-                        if (!done) {
-                            done = true;
-                            clearTimeout(timer);
-                            if (success) success(pos);
-                        }
-                    }, function(err) {
-                        if (!done) {
-                            done = true;
-                            clearTimeout(timer);
-                            if (success) success(getFallbackPos());
-                        }
-                    }, { timeout: 1100, enableHighAccuracy: true });
-                } catch(e) {
-                    if (!done) {
-                        done = true;
-                        clearTimeout(timer);
-                        if (success) success(getFallbackPos());
-                    }
-                }
-            } else {
-                done = true;
-                clearTimeout(timer);
-                if (success) success(getFallbackPos());
-            }
-        };
-
-        navigator.geolocation.watchPosition = function(success, error, options) {
-            if (success) success(getFallbackPos());
-            return 1;
-        };
-        navigator.geolocation.clearWatch = function(id) {};
-    }
 
     var css = '[class*=""serviceLogo""],[class*=""AppLogo""],[class*=""rootLogo""],[class*=""service-logo""],a[href*=""/pogoda/ru?""],a[href*=""/pogoda?""],a[href*=""ya.ru""] { pointer-events: none !important; cursor: default !important; user-select: none !important; } ' +
               '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""advert""],[class*=""Advert""],[class*=""Banner""],[class*=""banner""],[class*=""yandex_rtb""],[id*=""yandex_rtb""],[class*=""yap-R-""],[class*=""yap-layout""],iframe[src*=""an.yandex.ru""],iframe[src*=""yabs.yandex.ru""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""Rating""],[class*=""rating""],[class*=""Nps""],[class*=""nps""],[class*=""speechBubble""],[class*=""toast""],[class*=""Toast""] { display: none !important; height: 0 !important; min-height: 0 !important; max-height: 0 !important; padding: 0 !important; margin: 0 !important; opacity: 0 !important; pointer-events: none !important; visibility: hidden !important; }';
@@ -3209,162 +3227,21 @@ namespace RuWeatherWidget
         target.appendChild(s);
     }
     injectStyle();
-
-    // Intercept clicks on any external/navigation links, keeping map interaction controls working
-    window.addEventListener('click', function(e) {
-        var link = e.target ? e.target.closest('a') : null;
-        if (link) {
-            var href = link.getAttribute('href');
-            if (href) {
-                var h = href.toLowerCase();
-                if (h.indexOf('/maps') === -1) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                    return false;
-                }
-            }
-        }
-    }, true);
-
-    function cleanAds() {
-        injectStyle();
-        // Disarm logo and external links completely
-        try {
-            document.querySelectorAll('[class*=""AppLogo""],[class*=""serviceLogo""],[class*=""rootLogo""],a[href*=""/pogoda/ru?""],a[href*=""/pogoda?""],a[href*=""ya.ru""]').forEach(function(el) {
-                el.style.pointerEvents = 'none';
-                el.style.cursor = 'default';
-                el.removeAttribute('href');
-                el.setAttribute('tabindex', '-1');
-            });
-        } catch(e) {}
-
-        var sel = '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""advert""],[class*=""Advert""],[class*=""yandex_rtb""],[id*=""yandex_rtb""],[class*=""yap-R-""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""speechBubble""],[class*=""Rating""],[class*=""rating""],[class*=""Nps""],[class*=""nps""]';
-        var items = document.querySelectorAll(sel);
-        for (var i = 0; i < items.length; i++) {
-            items[i].style.display = 'none';
-            if (items[i].parentNode) items[i].parentNode.removeChild(items[i]);
-        }
-        // Remove feedback popups like 'Как вам Яндекс Погода?'
-        try {
-            var dlgs = document.querySelectorAll('[role=""dialog""], [class*=""Modal""], [class*=""modal""], [class*=""Popup""], [class*=""popup""]');
-            for (var j = 0; j < dlgs.length; j++) {
-                var t = dlgs[j].innerText || dlgs[j].textContent || '';
-                if (t.indexOf('Как вам') !== -1 || t.indexOf('Оцените') !== -1 || t.indexOf('отзыв') !== -1) {
-                    dlgs[j].style.display = 'none';
-                    if (dlgs[j].parentNode) dlgs[j].parentNode.removeChild(dlgs[j]);
-                }
-            }
-        } catch(e) {}
-    }
-
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() {
-            injectStyle();
-            cleanAds();
-        });
-    } else {
-        injectStyle();
-        cleanAds();
+        document.addEventListener('DOMContentLoaded', injectStyle);
     }
-
-    var cleanTimer = null;
-    function scheduleClean() {
-        if (cleanTimer) return;
-        cleanTimer = setTimeout(function() {
-            cleanTimer = null;
-            cleanAds();
-        }, 300);
-    }
-    var observer = new MutationObserver(function() {
-        scheduleClean();
-    });
-    observer.observe(document.documentElement || document.body, { childList: true, subtree: true });
+    var obs = new MutationObserver(injectStyle);
+    obs.observe(document.documentElement || document.body, { childList: true, subtree: true });
 })();";
-                            await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(adBlockScript);
-                        }
-                        catch { }
+                        await wv.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(adBlockScript);
 
-                        _webView.NavigationCompleted += (s, e) =>
+                        wv.NavigationCompleted += (s, e) =>
                         {
                             if (_lblMapLoading != null) _lblMapLoading.Visibility = Visibility.Collapsed;
-                            try
-                            {
-                                _webView.CoreWebView2.ExecuteScriptAsync(@"
-(function() {
-    try {
-        var s = document.createElement('style');
-        s.id = 'ru-weather-shield-css';
-        s.textContent = '[class*=""AppLogo""],[class*=""serviceLogo""],[class*=""rootLogo""] { pointer-events: none !important; cursor: default !important; user-select: none !important; } ' +
-                        '[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""speechBubble""] { display: none !important; height: 0 !important; opacity: 0 !important; visibility: hidden !important; }';
-        if (document.head) document.head.appendChild(s);
-    } catch(e) {}
-
-    try {
-        var origPush = history.pushState;
-        history.pushState = function(state, title, url) {
-            if (url && typeof url === 'string') {
-                var u = url.toLowerCase();
-                if (u.indexOf('/maps') === -1 && u.indexOf('about:blank') === -1) {
-                    return;
-                }
-            }
-            return origPush.apply(history, arguments);
-        };
-        var origReplace = history.replaceState;
-        history.replaceState = function(state, title, url) {
-            if (url && typeof url === 'string') {
-                var u = url.toLowerCase();
-                if (u.indexOf('/maps') === -1 && u.indexOf('about:blank') === -1) {
-                    return;
-                }
-            }
-            return origReplace.apply(history, arguments);
-        };
-    } catch(e) {}
-
-    window.addEventListener('click', function(ev) {
-        var link = ev.target ? ev.target.closest('a') : null;
-        if (link) {
-            var href = link.getAttribute('href');
-            if (href && href.toLowerCase().indexOf('/maps') === -1) {
-                ev.preventDefault();
-                ev.stopPropagation();
-                ev.stopImmediatePropagation();
-                return false;
-            }
-        }
-    }, true);
-
-    function disarm() {
-        document.querySelectorAll('[class*=""AppLogo""],[class*=""serviceLogo""],[class*=""rootLogo""]').forEach(function(el) {
-            el.style.pointerEvents = 'none';
-            el.style.cursor = 'default';
-            el.removeAttribute('href');
-        });
-        document.querySelectorAll('[class*=""AppMapsAdvert""],[class*=""AdvertTop""],[class*=""AppMapsAdvertTop""],[class*=""Poll""],[class*=""poll""],[class*=""Feedback""],[class*=""feedback""],[class*=""speechBubble""]').forEach(function(e){ e.style.display='none'; e.remove(); });
-    }
-    disarm();
-    setInterval(disarm, 500);
-})();");
-                            }
-                            catch { }
                         };
-                        _isWebViewInitialized = true;
                     }
 
-                    try
-                    {
-                        if (_webView.CoreWebView2 != null)
-                        {
-                            await _webView.CoreWebView2.ExecuteScriptAsync(string.Format(CultureInfo.InvariantCulture,
-                                "window.__widgetLat = {0:F4}; window.__widgetLon = {1:F4};",
-                                _app.Config.Lat, _app.Config.Lon));
-                        }
-                    }
-                    catch { }
-
-                    if (_lastRadarUrl != url)
+                    if (_webView != null && _lastRadarUrl != url)
                     {
                         _lastRadarUrl = url;
                         if (_lblMapLoading != null) _lblMapLoading.Visibility = Visibility.Visible;
@@ -3504,7 +3381,7 @@ namespace RuWeatherWidget
             if (_currentCity != d.City)
             {
                 _currentCity = d.City;
-                if (_currentPage == 1) LoadRadarMap();
+                if (_currentPage == 1 && IsVisible) LoadRadarMap();
             }
 
             _txtCity.Text = "📍 " + d.City;
@@ -3599,7 +3476,7 @@ namespace RuWeatherWidget
                 _dailyPanel.Children.Add(db);
             }
 
-            if (_currentPage == 1)
+            if (_currentPage == 1 && IsVisible)
             {
                 LoadRadarMap();
             }
