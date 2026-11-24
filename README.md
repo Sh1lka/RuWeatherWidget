@@ -1,9 +1,9 @@
-# RuWeatherWidget v1.3.5
+# RuWeatherWidget v1.3.6
 
 > **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, подробным прогнозом на 5 дней, выбором сервиса погоды (Яндекс, AccuWeather, Mail.ru), современным меню в стиле Fluent Design и встроенным блокировщиком рекламы.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows)](https://microsoft.com/windows)
-[![Version](https://img.shields.io/badge/Version-1.3.5-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
+[![Version](https://img.shields.io/badge/Version-1.3.6-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
 [![Framework](https://img.shields.io/badge/.NET-Framework%204.8%20%7C%20WPF-512BD4)](https://dotnet.microsoft.com/)
 [![Engine](https://img.shields.io/badge/Web-Microsoft%20WebView2%20(Chromium)-008272)](https://developer.microsoft.com/microsoft-edge/webview2/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -44,6 +44,16 @@
 <p align="center">
   <img src="docs/screenshots/start_menu.png" alt="Виджет при открытом меню Пуск" width="850" />
 </p>
+
+---
+
+## 🚀 Что нового в версии 1.3.6
+
+- 🎯 **Идеальное наведение курсора и отклик виджета (Hover & Click Fix):**
+  - **Устранено мерцание и сброс подсветки:** При наведении курсора подсветка кнопки больше не гаснет каждые 500 мс. Устранён избыточный вызов `SetWindowPos` по таймеру при неизменных координатах и сохранении Topmost-статуса.
+  - **Быстрая плавная анимация без перерисовки иконки:** Обновление визуального состояния Hover теперь изменяет только фон `Border.Background`, без пересоздания векторной иконки погоды и потери фокуса мыши.
+  - **Единый курсор-указатель (`Cursors.Hand`):** Иконка-рука отображается по всей площади кнопки виджета (включая иконку погоды, температуру и описание) без мерцаний и выпадений в системную стрелку.
+  - **Четкий отклик на клик без двойных срабатываний:** Исключен перехват события `WM_LBUTTONUP` низкоуровневой оконной процедурой (ранее приводивший к рассинхрону состояния мыши WPF и ложному самозакрытию окна). Теперь окно открывается и закрывается с первого раза и стабильно работает по всей области кнопки.
 
 ---
 
