@@ -1442,7 +1442,7 @@ namespace RuWeatherWidget
 
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
-            Background = Brushes.Transparent;
+            Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
             ShowInTaskbar = false;
             Topmost = true;
             ResizeMode = ResizeMode.NoResize;
@@ -1611,7 +1611,7 @@ namespace RuWeatherWidget
             Cursor = Cursors.Hand;
 
             var outerContainer = new Grid();
-            outerContainer.Background = Brushes.Transparent;
+            outerContainer.Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
             outerContainer.Cursor = Cursors.Hand;
             outerContainer.HorizontalAlignment = HorizontalAlignment.Stretch;
             outerContainer.VerticalAlignment = VerticalAlignment.Stretch;
@@ -1623,7 +1623,7 @@ namespace RuWeatherWidget
             _hoverBorder.Padding = new Thickness(6, 2, 8, 2);
             _hoverBorder.Cursor = Cursors.Hand;
             _hoverBorder.CornerRadius = new CornerRadius(5);
-            _hoverBorder.Background = Brushes.Transparent;
+            _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
 
             var stack = new StackPanel();
             stack.Orientation = Orientation.Horizontal;
@@ -1703,7 +1703,7 @@ namespace RuWeatherWidget
             }
             else
             {
-                _hoverBorder.Background = Brushes.Transparent;
+                _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
             }
         }
 
