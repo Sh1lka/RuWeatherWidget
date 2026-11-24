@@ -1,9 +1,9 @@
-# RuWeatherWidget v1.3.7
+# RuWeatherWidget v1.3.8
 
 > **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, подробным прогнозом на 5 дней, выбором сервиса погоды (Яндекс, AccuWeather, Mail.ru), современным меню в стиле Fluent Design и встроенным блокировщиком рекламы.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows)](https://microsoft.com/windows)
-[![Version](https://img.shields.io/badge/Version-1.3.7-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
+[![Version](https://img.shields.io/badge/Version-1.3.8-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
 [![Framework](https://img.shields.io/badge/.NET-Framework%204.8%20%7C%20WPF-512BD4)](https://dotnet.microsoft.com/)
 [![Engine](https://img.shields.io/badge/Web-Microsoft%20WebView2%20(Chromium)-008272)](https://developer.microsoft.com/microsoft-edge/webview2/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -44,6 +44,15 @@
 <p align="center">
   <img src="docs/screenshots/start_menu.png" alt="Виджет при открытом меню Пуск" width="850" />
 </p>
+
+---
+
+## 🚀 Что нового в версии 1.3.8
+
+- 🎯 **Полная активная область рамки виджета (Full Hit-Test & Click Area):**
+  - **Устранено «туннелирование» сквозь пустые пиксели:** В слоистых окнах Windows (`WS_EX_LAYERED`) пиксели с нулевым альфа-каналом (`Brushes.Transparent`) пропускали мышь сквозь себя на панель задач, из-за чего подсветка и клики срабатывали только при точном попадании в символы температуры.
+  - **100% покрытие всей плашки:** На окно, контейнер и рамку установлена невидимая глазу подложка с альфа-каналом `Color.FromArgb(1, 0, 0, 0)`: теперь виджет загорается при входе мыши в любую точку скругленной рамки.
+  - **Правый и левый клики работают по всей площади:** Вызов меню настроек (правый клик) и открытие прогноза погоды (левый клик) безупречно работают на всей площади виджета (слева от иконки, на иконке, между иконкой и текстом, на тексте и на пустом пространстве справа).
 
 ---
 
