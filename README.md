@@ -1,9 +1,9 @@
-# RuWeatherWidget v1.3.9
+# RuWeatherWidget v1.4.0
 
 > **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, подробным прогнозом на 5 дней, выбором сервиса погоды (Яндекс, AccuWeather, Mail.ru), современным меню в стиле Fluent Design и встроенным блокировщиком рекламы.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows)](https://microsoft.com/windows)
-[![Version](https://img.shields.io/badge/Version-1.3.9-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
+[![Version](https://img.shields.io/badge/Version-1.4.0-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
 [![Framework](https://img.shields.io/badge/.NET-Framework%204.8%20%7C%20WPF-512BD4)](https://dotnet.microsoft.com/)
 [![Engine](https://img.shields.io/badge/Web-Microsoft%20WebView2%20(Chromium)-008272)](https://developer.microsoft.com/microsoft-edge/webview2/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -33,7 +33,7 @@
 </p>
 
 ### 🔹 Прогноз погоды и интерактивная карта осадков
-Всплывающее окно (Flyout) по клику на виджет: подробный 5-дневный прогноз и радар осадков:
+Всплывающее окно (Flyout) по клику на виджет: подробный 5-дневный прогноз и радар осадков без рекламы:
 
 | ☀️ Подробный прогноз на 5 дней | 🌧️ Интерактивная карта осадков Яндекс |
 |:---:|:---:|
@@ -44,6 +44,18 @@
 <p align="center">
   <img src="docs/screenshots/start_menu.png" alt="Виджет при открытом меню Пуск" width="850" />
 </p>
+
+---
+
+## 🚀 Что нового в версии 1.4.0
+
+- 🛡️ **Гарантированная защита от кнопки «Свернуть все окна» / «Показать рабочий стол» (Win+D, Win+M, угол панели задач):**
+  - **Устранено перекрытие панелью задач:** При нажатии кнопки «Свернуть все окна» Windows перестраивает стек Topmost-окон и выдвигает `Shell_TrayWnd` наверх, физически закрывая виджет фоном панели задач.
+  - **Интеллектуальный контроль Z-порядка (`IsBehindTray`):** Оконная процедура непрерывно отслеживает Z-уровень относительно `Shell_TrayWnd` и `Shell_SecondaryTrayWnd`. Если панель задач оказывается выше виджета, он немедленно возвращается на вершину Topmost-слоя.
+  - **Мгновенная реакция 0 мс через `SetWinEventHook`:** Внедрен системный перехватчик `EVENT_SYSTEM_FOREGROUND` — в момент переключения на рабочий стол или активации панели задач виджет восстанавливается мгновенно, без задержек.
+  - **Полное отсутствие мерцания подсветки (Hover):** `SetWindowPos` вызывается строго при возникновении перекрытия. В обычном состоянии вызовов перепозиционирования нет, поэтому подсветка курсора работает идеально гладко.
+- 🌧️ **Чистый скриншот интерактивной карты осадков в репозитории:**
+  - Обновлён скриншот `docs/screenshots/radar.png`: карта осадков представлена во Fluent-рамке без рекламных баннеров и всплывающих опросников.
 
 ---
 
