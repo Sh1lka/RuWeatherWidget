@@ -1,9 +1,9 @@
-# RuWeatherWidget v1.3.8
+# RuWeatherWidget v1.3.9
 
 > **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, подробным прогнозом на 5 дней, выбором сервиса погоды (Яндекс, AccuWeather, Mail.ru), современным меню в стиле Fluent Design и встроенным блокировщиком рекламы.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows)](https://microsoft.com/windows)
-[![Version](https://img.shields.io/badge/Version-1.3.8-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
+[![Version](https://img.shields.io/badge/Version-1.3.9-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
 [![Framework](https://img.shields.io/badge/.NET-Framework%204.8%20%7C%20WPF-512BD4)](https://dotnet.microsoft.com/)
 [![Engine](https://img.shields.io/badge/Web-Microsoft%20WebView2%20(Chromium)-008272)](https://developer.microsoft.com/microsoft-edge/webview2/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -44,6 +44,15 @@
 <p align="center">
   <img src="docs/screenshots/start_menu.png" alt="Виджет при открытом меню Пуск" width="850" />
 </p>
+
+---
+
+## 🚀 Что нового в версии 1.3.9
+
+- 🔒 **Надежное закрытие контекстного меню при клике в любое место:**
+  - **Устранено зависание меню:** Из-за безактивационного стиля окна виджета (`WS_EX_NOACTIVATE`) клики по рабочему столу и сторонним приложениям (браузер, Проводник, мессенджеры) не генерировали системных сообщений деактивации, из-за чего контекстное меню закрывалось только по клику на панель задач.
+  - **Глобальный перехват внешних кликов (`WH_MOUSE_LL`):** На время показа контекстного меню активируется перехватчик кликов мыши: при любом клике вне меню (на рабочий стол или любое стороннее окно) меню закрывается моментально.
+  - Перехватчик мыши мгновенно отключается при закрытии меню и не создает нагрузки на систему.
 
 ---
 
