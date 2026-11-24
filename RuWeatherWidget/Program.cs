@@ -524,6 +524,7 @@ namespace RuWeatherWidget
 
         public void ToggleFlyout(int startPage = 0)
         {
+            if (IsContextMenuOpen) return;
             Log("ToggleFlyout called: startPage=" + startPage + ", isVis=" + (_flyoutWindow != null && _flyoutWindow.IsVisible));
             if ((DateTime.UtcNow - _lastToggle).TotalMilliseconds < 250) return;
             _lastToggle = DateTime.UtcNow;
@@ -1526,15 +1527,19 @@ namespace RuWeatherWidget
             const int WM_RBUTTONUP = 0x0205;
             if (msg == WM_LBUTTONUP)
             {
-                // Call ToggleFlyout once from Win32, but let handled = false so WPF gets mouse up
+                if (_app.IsContextMenuOpen)
+                {
+                    handled = false;
+                    return IntPtr.Zero;
+                }
                 _app.ToggleFlyout(0);
                 handled = false;
                 return IntPtr.Zero;
             }
             if (msg == WM_RBUTTONUP)
             {
-                ShowContextMenu();
-                handled = false;
+                Dispatcher.BeginInvoke(new Action(() => ShowContextMenu()));
+                handled = true;
                 return IntPtr.Zero;
             }
             if (msg == WM_SYSCOMMAND && (wParam.ToInt64() & 0xFFF0) == SC_MINIMIZE)
@@ -1704,9 +1709,16 @@ namespace RuWeatherWidget
 
         private void ShowContextMenu()
         {
+            if (_app.Flyout != null && _app.Flyout.IsVisible)
+            {
+                _app.Flyout.Hide();
+            }
+
             _app.IsContextMenuOpen = true;
             bool isLight = ThemeManager.IsTaskbarLight();
             var menu = new ContextMenu();
+            menu.PlacementTarget = this;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
             menu.Resources = FluentTheme.GetMenuResources(isLight);
             menu.Closed += delegate { _app.IsContextMenuOpen = false; };
 
