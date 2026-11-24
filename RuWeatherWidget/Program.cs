@@ -1405,6 +1405,17 @@ namespace RuWeatherWidget
         public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
         public const uint GW_HWNDPREV = 3;
 
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        public delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+        [DllImport("user32.dll")]
+        public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+        public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        public const uint WINEVENT_OUTOFCONTEXT = 0;
+
         [StructLayout(LayoutKind.Sequential)]
         public struct WINDOWPOS
         {
@@ -1542,6 +1553,43 @@ namespace RuWeatherWidget
         }
 
         private IntPtr _lastOwnerTray = IntPtr.Zero;
+        private WinEventDelegate _winEventProc;
+        private IntPtr _hWinEventHook = IntPtr.Zero;
+
+        private void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+        {
+            try
+            {
+                var helper = new System.Windows.Interop.WindowInteropHelper(this);
+                if (helper.Handle != IntPtr.Zero)
+                {
+                    IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+                    if (IsBehindTray(helper.Handle, hTray))
+                    {
+                        SetWindowPos(helper.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static bool IsBehindTray(IntPtr hwnd, IntPtr hTray)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            IntPtr p = hwnd;
+            for (int i = 0; i < 30; i++)
+            {
+                p = GetWindow(p, GW_HWNDPREV);
+                if (p == IntPtr.Zero) break;
+                if (hTray != IntPtr.Zero && p == hTray) return true;
+
+                var sb = new StringBuilder(32);
+                GetClassName(p, sb, 32);
+                string cls = sb.ToString();
+                if (cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd") return true;
+            }
+            return false;
+        }
 
         public TaskbarWidgetWindow(Program app)
         {
@@ -1618,14 +1666,26 @@ namespace RuWeatherWidget
 
                 UpdatePosition();
                 Program.Log("TaskbarWidgetWindow Loaded end");
+
+                try
+                {
+                    _winEventProc = new WinEventDelegate(OnWinEvent);
+                    _hWinEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+                }
+                catch { }
             };
 
             _posTimer = new DispatcherTimer();
-            _posTimer.Interval = TimeSpan.FromMilliseconds(500);
+            _posTimer.Interval = TimeSpan.FromMilliseconds(250);
             _posTimer.Tick += (s, e) => UpdatePosition();
             _posTimer.Start();
 
             Closed += delegate {
+                if (_hWinEventHook != IntPtr.Zero)
+                {
+                    try { UnhookWinEvent(_hWinEventHook); } catch { }
+                    _hWinEventHook = IntPtr.Zero;
+                }
                 StopMenuMouseHook();
                 RestoreTaskbar();
             };
@@ -1701,14 +1761,22 @@ namespace RuWeatherWidget
                 }
                 catch { }
             }
-            if (msg == WM_WINDOWPOSCHANGED && lParam != IntPtr.Zero)
+            if (msg == WM_WINDOWPOSCHANGED)
             {
                 try
                 {
-                    var pos = (WINDOWPOS)Marshal.PtrToStructure(lParam, typeof(WINDOWPOS));
-                    if ((pos.flags & SWP_NOZORDER) == 0 && pos.hwndInsertAfter != HWND_TOPMOST && pos.hwndInsertAfter != IntPtr.Zero)
+                    IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+                    if (IsBehindTray(hwnd, hTray))
                     {
                         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    }
+                    else if (lParam != IntPtr.Zero)
+                    {
+                        var pos = (WINDOWPOS)Marshal.PtrToStructure(lParam, typeof(WINDOWPOS));
+                        if ((pos.flags & SWP_NOZORDER) == 0 && pos.hwndInsertAfter != HWND_TOPMOST && pos.hwndInsertAfter != IntPtr.Zero)
+                        {
+                            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        }
                     }
                 }
                 catch { }
@@ -2142,6 +2210,8 @@ namespace RuWeatherWidget
                 bool isTopmost = (curExStyle & WS_EX_TOPMOST) != 0;
                 bool needsTopmostFix = !isTopmost;
 
+                bool isBehindTray = IsBehindTray(helper.Handle, hTray);
+
                 bool posChanged = curR.Left != targetX || curR.Top != targetY || (curR.Right - curR.Left) != targetW || (curR.Bottom - curR.Top) != targetH;
 
                 if (_isHovered && !IsMouseOver)
@@ -2149,7 +2219,7 @@ namespace RuWeatherWidget
                     SetHover(false);
                 }
 
-                if (needsShow || needsTopmostFix || posChanged)
+                if (needsShow || needsTopmostFix || isBehindTray || posChanged)
                 {
                     SetWindowPos(helper.Handle, HWND_TOPMOST, targetX, targetY, targetW, targetH, SWP_SHOWWINDOW | SWP_NOACTIVATE);
                 }
