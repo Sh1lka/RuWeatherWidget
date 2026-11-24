@@ -300,7 +300,7 @@ namespace RuWeatherInstaller
                     if (key != null)
                     {
                         key.SetValue("DisplayName", "Виджет погоды (Русский для Windows 11)");
-                        key.SetValue("DisplayVersion", "1.3.0");
+                        key.SetValue("DisplayVersion", "1.3.1");
                         key.SetValue("Publisher", "Antigravity");
                         key.SetValue("DisplayIcon", targetExe + ",0");
                         key.SetValue("InstallLocation", targetDir);

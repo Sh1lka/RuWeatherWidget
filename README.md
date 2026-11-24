@@ -1,9 +1,9 @@
-# RuWeatherWidget v1.3
+# RuWeatherWidget v1.3.1
 
 > **Нативный погодный виджет для панели задач Windows 11** с интерактивной картой осадков Яндекс.Погоды, подробным прогнозом на 5 дней, выбором сервиса погоды (Яндекс, AccuWeather, Mail.ru), современным меню в стиле Fluent Design и встроенным блокировщиком рекламы.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011-0078D6?logo=windows)](https://microsoft.com/windows)
-[![Version](https://img.shields.io/badge/Version-1.3.0-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
+[![Version](https://img.shields.io/badge/Version-1.3.1-brightgreen.svg)](https://github.com/Sh1lka/RuWeatherWidget/releases)
 [![Framework](https://img.shields.io/badge/.NET-Framework%204.8%20%7C%20WPF-512BD4)](https://dotnet.microsoft.com/)
 [![Engine](https://img.shields.io/badge/Web-Microsoft%20WebView2%20(Chromium)-008272)](https://developer.microsoft.com/microsoft-edge/webview2/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -45,6 +45,19 @@
 <p align="center">
   <img src="docs/screenshots/start_menu.png" alt="Виджет при открытом меню Пуск" width="850" />
 </p>
+
+---
+
+## 🚀 Что нового в версии 1.3.1
+
+- 🛡️ **Полный иммунитет к кнопке «Свернуть все окна» / Win+D:**
+  - Устранена проблема, при которой клик по узкой полоске в правом нижнем углу экрана (или нажатие сочетания клавиш `Win + D` / `Win + M`) приводил к сворачиванию/скрытию погодного виджета с панели задач.
+  - В оконную процедуру виджета внедрен перехват системных сообщений минимизации и сокрытия:
+    - Блокировка `WM_SYSCOMMAND` с параметром `SC_MINIMIZE`.
+    - Блокировка `WM_SHOWWINDOW` при попытке шелла скрыть окно (`wParam = FALSE`).
+    - Блокировка `WM_SIZE` с состоянием `SIZE_MINIMIZED`.
+    - Фильтрация `WM_WINDOWPOSCHANGING`: удаление флага `SWP_HIDEWINDOW` и отмена переноса координат окна в скрытую область (`-32000, -32000`).
+  - Таймер синхронизации теперь контролирует `IsWindowVisible` и `WindowState`, гарантируя удержание виджета на системной панели задач в любых условиях.
 
 ---
 

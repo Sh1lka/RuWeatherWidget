@@ -1334,6 +1334,36 @@ namespace RuWeatherWidget
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         public const uint SWP_SHOWWINDOW = 0x0040;
         public const uint SWP_NOACTIVATE = 0x0010;
+        public const uint SWP_NOMOVE = 0x0002;
+        public const uint SWP_NOSIZE = 0x0001;
+        public const uint SWP_HIDEWINDOW = 0x0080;
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool IsIconic(IntPtr hWnd);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WINDOWPOS
+        {
+            public IntPtr hwnd;
+            public IntPtr hwndInsertAfter;
+            public int x;
+            public int y;
+            public int cx;
+            public int cy;
+            public uint flags;
+        }
+
+        public const int WM_WINDOWPOSCHANGING = 0x0046;
+        public const int WM_SHOWWINDOW = 0x0018;
+        public const int WM_SYSCOMMAND = 0x0112;
+        public const int SC_MINIMIZE = 0xF020;
+        public const int WM_SIZE = 0x0005;
+        public const int SIZE_MINIMIZED = 1;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
@@ -1361,6 +1391,22 @@ namespace RuWeatherWidget
             Top = SystemParameters.PrimaryScreenHeight - 44;
 
             BuildUI();
+
+            StateChanged += delegate
+            {
+                if (WindowState != WindowState.Normal)
+                {
+                    WindowState = WindowState.Normal;
+                }
+            };
+
+            IsVisibleChanged += delegate
+            {
+                if (!IsVisible)
+                {
+                    Show();
+                }
+            };
 
             Loaded += delegate
             {
@@ -1414,11 +1460,54 @@ namespace RuWeatherWidget
             {
                 _app.ToggleFlyout(0);
                 handled = true;
+                return IntPtr.Zero;
             }
-            else if (msg == WM_RBUTTONUP)
+            if (msg == WM_RBUTTONUP)
             {
                 ShowContextMenu();
                 handled = true;
+                return IntPtr.Zero;
+            }
+            if (msg == WM_SYSCOMMAND && (wParam.ToInt64() & 0xFFF0) == SC_MINIMIZE)
+            {
+                // Prevent minimization by "Show Desktop" (Win+D, corner button, etc.)
+                handled = true;
+                return IntPtr.Zero;
+            }
+            if (msg == WM_SHOWWINDOW && wParam == IntPtr.Zero)
+            {
+                // Prevent hiding by "Show Desktop" sweep
+                handled = true;
+                return IntPtr.Zero;
+            }
+            if (msg == WM_SIZE && wParam.ToInt64() == SIZE_MINIMIZED)
+            {
+                // Prevent state transition to minimized
+                handled = true;
+                return IntPtr.Zero;
+            }
+            if (msg == WM_WINDOWPOSCHANGING && lParam != IntPtr.Zero)
+            {
+                try
+                {
+                    var pos = (WINDOWPOS)Marshal.PtrToStructure(lParam, typeof(WINDOWPOS));
+                    bool changed = false;
+                    if (pos.x <= -30000 || pos.y <= -30000)
+                    {
+                        pos.flags |= SWP_NOMOVE;
+                        changed = true;
+                    }
+                    if ((pos.flags & SWP_HIDEWINDOW) != 0)
+                    {
+                        pos.flags &= ~SWP_HIDEWINDOW;
+                        changed = true;
+                    }
+                    if (changed)
+                    {
+                        Marshal.StructureToPtr(pos, lParam, false);
+                    }
+                }
+                catch { }
             }
             return IntPtr.Zero;
         }
@@ -1824,7 +1913,14 @@ namespace RuWeatherWidget
                 int targetW = (int)(Width * dpiX);
                 int targetH = (int)(Height * dpiY);
 
-                if (curR.Left != targetX || curR.Top != targetY || (curR.Right - curR.Left) != targetW || (curR.Bottom - curR.Top) != targetH)
+                bool needsShow = !IsWindowVisible(helper.Handle) || WindowState != WindowState.Normal || !IsVisible || IsIconic(helper.Handle);
+                if (needsShow)
+                {
+                    if (WindowState != WindowState.Normal) WindowState = WindowState.Normal;
+                    if (!IsVisible) Show();
+                }
+
+                if (needsShow || curR.Left != targetX || curR.Top != targetY || (curR.Right - curR.Left) != targetW || (curR.Bottom - curR.Top) != targetH)
                 {
                     SetWindowPos(helper.Handle, HWND_TOPMOST, targetX, targetY, targetW, targetH, SWP_SHOWWINDOW | SWP_NOACTIVATE);
                 }
