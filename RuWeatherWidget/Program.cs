@@ -1526,14 +1526,15 @@ namespace RuWeatherWidget
             const int WM_RBUTTONUP = 0x0205;
             if (msg == WM_LBUTTONUP)
             {
+                // Call ToggleFlyout once from Win32, but let handled = false so WPF gets mouse up
                 _app.ToggleFlyout(0);
-                handled = true;
+                handled = false;
                 return IntPtr.Zero;
             }
             if (msg == WM_RBUTTONUP)
             {
                 ShowContextMenu();
-                handled = true;
+                handled = false;
                 return IntPtr.Zero;
             }
             if (msg == WM_SYSCOMMAND && (wParam.ToInt64() & 0xFFF0) == SC_MINIMIZE)
@@ -1602,6 +1603,8 @@ namespace RuWeatherWidget
 
         private void BuildUI()
         {
+            Cursor = Cursors.Hand;
+
             var outerContainer = new Grid();
             outerContainer.Background = Brushes.Transparent;
             outerContainer.Cursor = Cursors.Hand;
@@ -1615,27 +1618,32 @@ namespace RuWeatherWidget
             _hoverBorder.Padding = new Thickness(6, 2, 8, 2);
             _hoverBorder.Cursor = Cursors.Hand;
             _hoverBorder.CornerRadius = new CornerRadius(5);
+            _hoverBorder.Background = Brushes.Transparent;
 
             var stack = new StackPanel();
             stack.Orientation = Orientation.Horizontal;
             stack.VerticalAlignment = VerticalAlignment.Center;
+            stack.Cursor = Cursors.Hand;
 
             _iconCanvas = new Canvas();
             _iconCanvas.Width = 24;
             _iconCanvas.Height = 24;
             _iconCanvas.VerticalAlignment = VerticalAlignment.Center;
+            _iconCanvas.Cursor = Cursors.Hand;
             stack.Children.Add(_iconCanvas);
 
             var textStack = new StackPanel();
             textStack.Orientation = Orientation.Vertical;
             textStack.Margin = new Thickness(7, 0, 0, 0);
             textStack.VerticalAlignment = VerticalAlignment.Center;
+            textStack.Cursor = Cursors.Hand;
 
             _txtTemp = new TextBlock();
             _txtTemp.Text = "...";
             _txtTemp.FontSize = 12;
             _txtTemp.FontWeight = FontWeights.SemiBold;
             _txtTemp.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
+            _txtTemp.Cursor = Cursors.Hand;
 
             _txtCond = new TextBlock();
             _txtCond.Text = "Загрузка...";
@@ -1643,6 +1651,7 @@ namespace RuWeatherWidget
             _txtCond.FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
             _txtCond.TextTrimming = TextTrimming.CharacterEllipsis;
             _txtCond.MaxWidth = 120;
+            _txtCond.Cursor = Cursors.Hand;
 
             textStack.Children.Add(_txtTemp);
             textStack.Children.Add(_txtCond);
@@ -1654,36 +1663,43 @@ namespace RuWeatherWidget
 
             ApplyStyle();
 
-            _hoverBorder.MouseEnter += delegate
-            {
-                _isHovered = true;
-                ApplyStyle();
-            };
+            // Smooth, reliable hover across the entire widget
+            MouseEnter += (s, e) => SetHover(true);
+            MouseLeave += (s, e) => SetHover(false);
+            MouseMove += (s, e) => { if (!_isHovered) SetHover(true); };
 
-            _hoverBorder.MouseLeave += delegate
+            outerContainer.MouseEnter += (s, e) => SetHover(true);
+            outerContainer.MouseLeave += (s, e) =>
             {
-                _isHovered = false;
-                ApplyStyle();
+                if (!IsMouseOver) SetHover(false);
             };
+        }
 
-            MouseButtonEventHandler leftClick = (s, e) =>
+        private void SetHover(bool hovered)
+        {
+            if (_isHovered == hovered) return;
+            _isHovered = hovered;
+            UpdateHoverVisual();
+        }
+
+        private void UpdateHoverVisual()
+        {
+            if (_hoverBorder == null) return;
+            if (_isHovered)
             {
-                e.Handled = true;
-                _app.ToggleFlyout(0);
-            };
-
-            MouseButtonEventHandler rightClick = (s, e) =>
+                if (_currentIsLight)
+                {
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(20, 0, 0, 0));
+                }
+                else
+                {
+                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(25, 255, 255, 255));
+                }
+            }
+            else
             {
-                e.Handled = true;
-                ShowContextMenu();
-            };
-
-            _hoverBorder.PreviewMouseLeftButtonUp += leftClick;
-            _hoverBorder.PreviewMouseRightButtonUp += rightClick;
-            outerContainer.PreviewMouseLeftButtonUp += leftClick;
-            outerContainer.PreviewMouseRightButtonUp += rightClick;
-            this.PreviewMouseLeftButtonUp += leftClick;
-            this.PreviewMouseRightButtonUp += rightClick;
+                _hoverBorder.Background = Brushes.Transparent;
+            }
         }
 
         private void ShowContextMenu()
@@ -1890,21 +1906,7 @@ namespace RuWeatherWidget
             _hoverBorder.CornerRadius = new CornerRadius(5);
             _hoverBorder.Effect = null;
 
-            if (_isHovered)
-            {
-                if (isLight)
-                {
-                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(20, 0, 0, 0));
-                }
-                else
-                {
-                    _hoverBorder.Background = new SolidColorBrush(Color.FromArgb(25, 255, 255, 255));
-                }
-            }
-            else
-            {
-                _hoverBorder.Background = Brushes.Transparent;
-            }
+            UpdateHoverVisual();
 
             if (isLight)
             {
@@ -2010,10 +2012,16 @@ namespace RuWeatherWidget
 
                 int curExStyle = GetWindowLong(helper.Handle, GWL_EXSTYLE);
                 bool isTopmost = (curExStyle & WS_EX_TOPMOST) != 0;
-                IntPtr prevHwnd = GetWindow(helper.Handle, GW_HWNDPREV);
-                bool needsZOrderFix = !isTopmost || prevHwnd != IntPtr.Zero;
+                bool needsTopmostFix = !isTopmost;
 
-                if (needsShow || needsZOrderFix || curR.Left != targetX || curR.Top != targetY || (curR.Right - curR.Left) != targetW || (curR.Bottom - curR.Top) != targetH)
+                bool posChanged = curR.Left != targetX || curR.Top != targetY || (curR.Right - curR.Left) != targetW || (curR.Bottom - curR.Top) != targetH;
+
+                if (_isHovered && !IsMouseOver)
+                {
+                    SetHover(false);
+                }
+
+                if (needsShow || needsTopmostFix || posChanged)
                 {
                     SetWindowPos(helper.Handle, HWND_TOPMOST, targetX, targetY, targetW, targetH, SWP_SHOWWINDOW | SWP_NOACTIVATE);
                 }
